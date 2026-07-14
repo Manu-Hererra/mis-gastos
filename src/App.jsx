@@ -458,7 +458,7 @@ export default function App() {
         id: id || uid(),
         activo,
         cantidad: Number(data.cantidad),
-        precio_compra: 1,
+        precio_compra: esEfectivo ? 1 : Number(data.precio_compra),
         fecha_compra: data.fecha_compra || todayStr(),
       }]);
       await recargar(); cerrarModal();
