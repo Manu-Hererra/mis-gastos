@@ -234,12 +234,32 @@ export default function App() {
   async function guardarGasto(data) {
     setSaving(true);
     try {
-      await dbUpsert("expenses", [{
-        id: editing?.id || uid(),
-        description: data.description, amount: Number(data.amount),
-        category: data.category, card: data.card,
-        date: data.date, is_fixed: false, fixed_ref: null,
-      }]);
+      const n = Number(data.cuotas) || 1;
+      if (n > 1 && !editing) {
+        const grupo = uid();
+        const [y, m, d] = data.date.split("-").map(Number);
+        const rows = Array.from({ length: n }, (_, i) => {
+          const dt = new Date(y, m - 1 + i, d);
+          const dateStr = `${dt.getFullYear()}-${String(dt.getMonth()+1).padStart(2,"0")}-${String(dt.getDate()).padStart(2,"0")}`;
+          return {
+            id: uid(), description: data.description, amount: Number(data.amount),
+            category: data.category, card: data.card, date: dateStr,
+            is_fixed: false, fixed_ref: null,
+            cuotas: n, cuota_num: i + 1, cuota_grupo: grupo,
+          };
+        });
+        await dbUpsert("expenses", rows);
+      } else {
+        await dbUpsert("expenses", [{
+          id: editing?.id || uid(),
+          description: data.description, amount: Number(data.amount),
+          category: data.category, card: data.card,
+          date: data.date, is_fixed: false, fixed_ref: null,
+          cuotas: editing?.cuotas ?? null,
+          cuota_num: editing?.cuota_num ?? null,
+          cuota_grupo: editing?.cuota_grupo ?? null,
+        }]);
+      }
       await recargar(); cerrarModal();
     } catch(e){ alert("Error al guardar: "+e.message); }
     setSaving(false);
@@ -676,6 +696,7 @@ function FilaGasto({ gasto:e, onClick, conSigno=true }) {
         <div className="fila-meta">
           <span className="fila-medio" style={{color:medio.color}}>{medio.icon} {medio.name}</span>
           {e.is_fixed && <span className="chip-fijo">FIJO</span>}
+          {e.cuota_num && e.cuotas && <span className="chip-cuota">{e.cuota_num}/{e.cuotas}</span>}
         </div>
       </div>
       <div className="fila-monto" style={{color:cat.color}}>{conSigno?"-":""}{formatARS(e.amount)}</div>
@@ -711,10 +732,12 @@ function GastoModal({ gasto, saving, onGuardar, onEliminar, onCerrar }) {
     category:    gasto?.category || CATS[0].id,
     card:        gasto?.card     || MEDIOS[0].id,
     date:        gasto?.date     || todayStr(),
+    cuotas:      1,
   });
   const set     = (k,v) => setForm(f=>({...f,[k]:v}));
   const numStr  = form.amount.replace(/\D/g,"");
   const display = numStr ? new Intl.NumberFormat("es-AR").format(Number(numStr)) : "";
+  const mostrarCuotas = !gasto && form.card === "credito";
 
   return (
     <Modal titulo={gasto?"Editar gasto":"Nuevo gasto"} onCerrar={onCerrar}>
@@ -727,9 +750,13 @@ function GastoModal({ gasto, saving, onGuardar, onEliminar, onCerrar }) {
         <input type="text" placeholder="Ej: Almuerzo, nafta…"
           value={form.description} onChange={e=>set("description",e.target.value)}/>
       </Campo>
-
       <Campo label="Categoría"><PickerCategoria value={form.category} onChange={v=>set("category",v)}/></Campo>
       <Campo label="Medio de pago"><PickerMedio value={form.card} onChange={v=>set("card",v)}/></Campo>
+      {mostrarCuotas && (
+        <Campo label="Cuotas">
+          <PickerCuotas value={form.cuotas} onChange={v=>set("cuotas",v)}/>
+        </Campo>
+      )}
       <Campo label="Fecha">
         <input type="date" value={form.date} onChange={e=>set("date",e.target.value)}/>
       </Campo>
@@ -826,6 +853,19 @@ function PickerCategoria({ value, onChange }) {
     </div>
   );
 }
+const CUOTAS_OPTS = [1, 2, 3, 6, 9, 12, 18, 24];
+function PickerCuotas({ value, onChange }) {
+  return (
+    <div className="cuotas-picker">
+      {CUOTAS_OPTS.map(n=>(
+        <button key={n} className={`cuotas-opt${value===n?" sel":""}`} onClick={()=>onChange(n)}>
+          {n===1?"Sin cuotas":`${n}x`}
+        </button>
+      ))}
+    </div>
+  );
+}
+
 function PickerMedio({ value, onChange }) {
   return (
     <div className="medio-picker">
@@ -984,6 +1024,11 @@ const CSS = `
   .fila-medio  { font-weight:600; }
   .fila-monto  { font-weight:700; font-size:15px; flex-shrink:0; letter-spacing:-.3px; }
   .chip-fijo   { font-size:9px; padding:2px 6px; border-radius:99px; font-weight:700; background:rgba(59,130,246,.18); color:var(--accent2); }
+  .chip-cuota  { font-size:9px; padding:2px 6px; border-radius:99px; font-weight:700; background:rgba(245,158,11,.18); color:#fbbf24; }
+  .cuotas-picker { display:flex; flex-wrap:wrap; gap:7px; }
+  .cuotas-opt  { padding:8px 14px; border-radius:99px; font-size:13px; font-weight:600; border:1.5px solid var(--border); background:var(--card2); color:var(--muted); transition:all .15s; }
+  .cuotas-opt.sel { background:var(--grad); border-color:transparent; color:#fff; }
+  .cuotas-opt:active { opacity:.7; }
 
   /* ── FAB ── */
   .fab { position:fixed; bottom:calc(24px + env(safe-area-inset-bottom,0px)); right:20px; width:58px; height:58px; border-radius:50%; background:var(--grad); font-size:28px; color:#fff; box-shadow:0 6px 28px rgba(59,130,246,.5); z-index:9; display:flex; align-items:center; justify-content:center; }
