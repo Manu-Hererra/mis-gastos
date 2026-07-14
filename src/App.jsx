@@ -26,6 +26,42 @@ async function dbDelete(table, id) {
 // ─── Utils ────────────────────────────────────────────────────────────────────
 function uid() { return Date.now().toString(36) + Math.random().toString(36).slice(2); }
 
+// ── Cuotas helpers ────────────────────────────────────────────────────────────
+function addMeses(yyyyMM, n) {
+  const [y, m] = yyyyMM.split("-").map(Number);
+  const d = new Date(y, m - 1 + n, 1);
+  return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}`;
+}
+function fechaToMes(fechaStr) {
+  return fechaStr ? fechaStr.slice(0, 7) : "";
+}
+function cuotasEnMes(compras, mes) {
+  const result = [];
+  for (const c of compras) {
+    if (!c.activa) continue;
+    const mesInicio = fechaToMes(c.fecha_primera_cuota);
+    for (let i = 0; i < Number(c.cuotas_total); i++) {
+      if (addMeses(mesInicio, i) === mes) {
+        result.push({ compra: c, num: i + 1, monto: Number(c.monto_cuota) });
+        break;
+      }
+    }
+  }
+  return result;
+}
+function mesUltimaCuota(c) {
+  return addMeses(fechaToMes(c.fecha_primera_cuota), Number(c.cuotas_total) - 1);
+}
+function proyeccionCuotas(compras, mesDesde, numMeses = 12) {
+  return Array.from({ length: numMeses }, (_, i) => {
+    const mes    = addMeses(mesDesde, i);
+    const cuotas = cuotasEnMes(compras, mes);
+    const total  = cuotas.reduce((s, c) => s + c.monto, 0);
+    const libera = compras.filter(c => c.activa && mesUltimaCuota(c) === mes);
+    return { mes, cuotas, total, libera };
+  });
+}
+
 function todayStr() {
   const d = new Date();
   return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}-${String(d.getDate()).padStart(2,"0")}`;
@@ -173,6 +209,7 @@ export default function App() {
   const [contribuciones, setContribuciones] = useState([]);
   const [inversiones,    setInversiones]    = useState([]);
   const [cotizaciones,   setCotizaciones]   = useState([]);
+  const [comprasTarjeta, setComprasTarjeta] = useState([]);
   const [loadingCot,     setLoadingCot]     = useState(false);
   const [dolar,          setDolar]          = useState(null);
   const [online,         setOnline]         = useState(navigator.onLine);
@@ -205,7 +242,7 @@ export default function App() {
   function navTo(id) { setTab(id); setDrawer(false); }
 
   async function recargar() {
-    const [exp, fix, met, con, inv, cot, cfg] = await Promise.all([
+    const [exp, fix, met, con, inv, cot, cfg, cmp] = await Promise.all([
       dbGet("expenses",              { col:"date",          asc:false }),
       dbGet("fixed_expenses",        { col:"created_at",    asc:true  }),
       dbGet("savings_goals",         { col:"created_at",    asc:true  }),
@@ -213,9 +250,10 @@ export default function App() {
       dbGet("inversiones",           { col:"fecha_compra",  asc:true  }),
       dbGet("cotizaciones_cache",    { col:"updated_at",    asc:false }),
       dbGet("user_settings",         { col:"id",            asc:true  }),
+      dbGet("compras_tarjeta",       { col:"fecha_primera_cuota", asc:false }),
     ]);
     setGastos(exp); setFijos(fix); setMetas(met); setContribuciones(con);
-    setInversiones(inv); setCotizaciones(cot);
+    setInversiones(inv); setCotizaciones(cot); setComprasTarjeta(cmp||[]);
     if (cfg?.length > 0) {
       const row = cfg[0];
       const fromDB = { sueldo: row.sueldo || 0, diaClose: row.dia_close || null, tema: row.tema || "dark" };
@@ -533,6 +571,40 @@ export default function App() {
     setSaving(false);
   }
 
+  async function guardarCompra(data) {
+    setSaving(true);
+    try {
+      const montoTotal  = Number(data.monto_total);
+      const cuotasTotal = Number(data.cuotas_total);
+      const montoCuota  = data.monto_cuota_custom
+        ? Number(data.monto_cuota_custom)
+        : Math.round(montoTotal / cuotasTotal);
+      await dbUpsert("compras_tarjeta", [{
+        id:                  editing?.id || uid(),
+        tarjeta_id:          "default",
+        descripcion:         data.descripcion,
+        categoria:           data.categoria || null,
+        monto_total:         montoTotal,
+        cuotas_total:        cuotasTotal,
+        monto_cuota:         montoCuota,
+        fecha_primera_cuota: data.fecha_primera_cuota,
+        activa:              true,
+      }]);
+      await recargar(); cerrarModal();
+    } catch(e) { alert("Error: " + e.message); }
+    setSaving(false);
+  }
+  async function eliminarCompra(id) {
+    setSaving(true);
+    try {
+      const c = comprasTarjeta.find(x => x.id === id);
+      if (!c) return;
+      await dbUpsert("compras_tarjeta", [{ ...c, activa: false }]);
+      await recargar(); cerrarModal();
+    } catch(e) { alert(e.message); }
+    setSaving(false);
+  }
+
   function abrirModal(tipo, item=null) { setEditing(item); setModal(tipo); }
   function cerrarModal()               { setModal(null); setEditing(null); }
 
@@ -612,7 +684,7 @@ export default function App() {
             {tab==="home"        && <HomeTab gastosMes={gastosMesActual} todosGastos={gastos} totalMes={totalMesActual} sueldo={sueldo} fijos={fijos} valorCartera={valorCartera} onNavTo={navTo} onAgregar={()=>abrirModal("gasto")}/>}
             {tab==="gastos"      && <GastosTab gastos={gastosPeriodo} label={labelPeriod} total={totalPeriodo} vista={vista} diaClose={diaClose} esActual={esActual} onPrev={irPrev} onNext={irNext} onCambiarVista={cambiarVista} onAgregar={()=>abrirModal("gasto")} onEditar={e=>abrirModal("gasto",e)}/>}
             {tab==="fijos"       && <FijosTab fijos={fijos} onAgregar={()=>abrirModal("fijo")} onEditar={f=>abrirModal("fijo",f)}/>}
-            {tab==="medios"      && <MediosTab gastos={gastosPeriodo} total={totalPeriodo} label={labelPeriod} esActual={esActual} onPrev={irPrev} onNext={irNext}/>}
+            {tab==="medios"      && <MediosTab gastos={gastosPeriodo} total={totalPeriodo} label={labelPeriod} esActual={esActual} onPrev={irPrev} onNext={irNext} comprasTarjeta={comprasTarjeta} onNuevaCompra={()=>abrirModal("compra")} onEditarCompra={c=>abrirModal("compra",c)}/>}
             {tab==="analisis"    && <AnalisisTab gastos={gastosPeriodo} todosGastos={gastos} total={totalPeriodo} label={labelPeriod} sueldo={sueldo} esActual={esActual} onPrev={irPrev} onNext={irNext} onEditarSueldo={()=>abrirModal("settings")} dolar={dolar} diaClose={diaClose} period={period} vista={vista}/>}
             {tab==="metas"       && <MetasTab metas={metas} contribuciones={contribuciones} saving={saving} inversiones={inversiones} cotizaciones={cotizaciones} dolar={dolar} onNuevaMeta={()=>abrirModal("meta")} onEditarMeta={m=>abrirModal("meta",m)} onEliminarMeta={id=>eliminarMeta(id)} onAgregarAporte={m=>abrirModal("contribucion",m)} onEliminarAporte={id=>eliminarContribucion(id)}/>}
             {tab==="inversiones" && <InversionesTab inversiones={inversiones} cotizaciones={cotizaciones} dolar={dolar} loadingCot={loadingCot} onActualizar={actualizarCotizaciones} onGuardarPrecio={guardarPrecioManual} onAgregar={()=>abrirModal("inversion")} onEditar={i=>abrirModal("inversion",i)}/>}
@@ -626,6 +698,7 @@ export default function App() {
       {modal==="contribucion" && <ContribucionModal meta={editing}   saving={saving} onGuardar={guardarContribucion}                                                           onCerrar={cerrarModal}/>}
       {modal==="settings"     && <SettingsModal settings={settings} onGuardar={guardarSettings} onCerrar={cerrarModal}/>}
       {modal==="inversion"    && <InversionModal inversion={editing} saving={saving} onGuardar={guardarInversion} onEliminar={editing?()=>eliminarInversion(editing.id):null} onCerrar={cerrarModal}/>}
+      {modal==="compra"       && <CompraModal compra={editing} saving={saving} onGuardar={guardarCompra} onEliminar={editing?()=>eliminarCompra(editing.id):null} onCerrar={cerrarModal}/>}
     </>
   );
 }
@@ -941,46 +1014,300 @@ function FijosTab({ fijos, onAgregar, onEditar }) {
 }
 
 // ─── Medios ───────────────────────────────────────────────────────────────────
-function MediosTab({ gastos, total, label, esActual, onPrev, onNext }) {
+function MediosTab({ gastos, total, label, esActual, onPrev, onNext, comprasTarjeta, onNuevaCompra, onEditarCompra }) {
+  const [subTab, setSubTab] = useState("gastos");
   return (
     <>
-      <NavPeriod label={label} esActual={esActual} onPrev={onPrev} onNext={onNext}/>
-      {MEDIOS.map(medio=>{
-        const mg  = gastos.filter(e=>e.card===medio.id);
-        const mt  = mg.reduce((s,e)=>s+Number(e.amount),0);
-        const pct = total>0?(mt/total)*100:0;
-        return (
-          <div key={medio.id} className="medio-card">
-            <div className="medio-top">
-              <div className="medio-nombre-row">
-                <span className="medio-icono">{medio.icon}</span>
-                <span className="medio-nombre">{medio.name}</span>
+      {/* Sub-tabs */}
+      <div style={{display:"flex",gap:8,margin:"0 0 16px"}}>
+        {[["gastos","💳 Gastos"],["cuotas","📋 Cuotas"]].map(([id,lbl])=>(
+          <button key={id} onClick={()=>setSubTab(id)}
+            style={{flex:1,padding:"10px 0",borderRadius:"var(--radius)",border:"none",cursor:"pointer",fontWeight:700,fontSize:14,
+              background:subTab===id?"var(--accent)":"var(--card2)",
+              color:subTab===id?"#fff":"var(--muted)"}}>
+            {lbl}
+          </button>
+        ))}
+      </div>
+
+      {subTab==="gastos" && <>
+        <NavPeriod label={label} esActual={esActual} onPrev={onPrev} onNext={onNext}/>
+        {MEDIOS.map(medio=>{
+          const mg  = gastos.filter(e=>e.card===medio.id);
+          const mt  = mg.reduce((s,e)=>s+Number(e.amount),0);
+          const pct = total>0?(mt/total)*100:0;
+          return (
+            <div key={medio.id} className="medio-card">
+              <div className="medio-top">
+                <div className="medio-nombre-row">
+                  <span className="medio-icono">{medio.icon}</span>
+                  <span className="medio-nombre">{medio.name}</span>
+                </div>
+                <span className="medio-cant">{mg.length} gasto{mg.length!==1?"s":""}</span>
               </div>
-              <span className="medio-cant">{mg.length} gasto{mg.length!==1?"s":""}</span>
-            </div>
-            <div className="medio-total" style={{color:medio.color}}>{formatARS(mt)}</div>
-            <div className="barra-track" style={{height:6}}>
-              <div className="barra-fill" style={{width:`${pct.toFixed(0)}%`,background:medio.color}}/>
-            </div>
-            {mg.length>0 && (
-              <div className="medio-lista">
-                {mg.slice(0,5).map(e=>{
-                  const cat=getCat(e.category);
-                  return (
-                    <div key={e.id} className="medio-fila">
-                      <span>{cat.icon} {e.description||cat.name}</span>
-                      <span style={{fontWeight:700}}>{formatARS(e.amount)}</span>
-                    </div>
-                  );
-                })}
-                {mg.length>5 && <div className="medio-mas">+{mg.length-5} más</div>}
+              <div className="medio-total" style={{color:medio.color}}>{formatARS(mt)}</div>
+              <div className="barra-track" style={{height:6}}>
+                <div className="barra-fill" style={{width:`${pct.toFixed(0)}%`,background:medio.color}}/>
               </div>
-            )}
-          </div>
-        );
-      })}
-      {gastos.length===0 && <Vacio icon="💳" titulo="Sin gastos" sub="Navegá a Gastos del mes para agregar"/>}
+              {mg.length>0 && (
+                <div className="medio-lista">
+                  {mg.slice(0,5).map(e=>{
+                    const cat=getCat(e.category);
+                    return (
+                      <div key={e.id} className="medio-fila">
+                        <span>{cat.icon} {e.description||cat.name}</span>
+                        <span style={{fontWeight:700}}>{formatARS(e.amount)}</span>
+                      </div>
+                    );
+                  })}
+                  {mg.length>5 && <div className="medio-mas">+{mg.length-5} más</div>}
+                </div>
+              )}
+            </div>
+          );
+        })}
+        {gastos.length===0 && <Vacio icon="💳" titulo="Sin gastos" sub="Navegá a Gastos del mes para agregar"/>}
+      </>}
+
+      {subTab==="cuotas" && <CuotasSubTab compras={comprasTarjeta} onNueva={onNuevaCompra} onEditar={onEditarCompra}/>}
     </>
+  );
+}
+
+// ─── Cuotas sub-tab ───────────────────────────────────────────────────────────
+function CuotasSubTab({ compras, onNueva, onEditar }) {
+  const [mes, setMes] = useState(currentMonth());
+  const [vista, setVista] = useState("mes"); // "mes" | "proyeccion"
+
+  const cuotasMes     = cuotasEnMes(compras, mes);
+  const totalMes      = cuotasMes.reduce((s, c) => s + c.monto, 0);
+  const proxMes       = addMeses(mes, 1);
+  const liberaProxMes = compras.filter(c => c.activa && mesUltimaCuota(c) === mes);
+  const proyeccion    = proyeccionCuotas(compras, currentMonth(), 12);
+  const totalActual   = proyeccion[0]?.total || 0;
+
+  return (
+    <>
+      {/* Vista toggle */}
+      <div style={{display:"flex",gap:8,marginBottom:16}}>
+        {[["mes","📅 Este mes"],["proyeccion","📈 Proyección"]].map(([id,lbl])=>(
+          <button key={id} onClick={()=>setVista(id)}
+            style={{flex:1,padding:"8px 0",borderRadius:"var(--radius)",border:"none",cursor:"pointer",fontWeight:700,fontSize:13,
+              background:vista===id?"var(--accent2)":"var(--card2)",
+              color:vista===id?"#fff":"var(--muted)"}}>
+            {lbl}
+          </button>
+        ))}
+      </div>
+
+      {vista==="mes" && <>
+        {/* Navegador de mes */}
+        <NavPeriod label={monthLabel(mes)} esActual={mes===currentMonth()} onPrev={()=>setMes(m=>prevMk(m))} onNext={()=>setMes(m=>nextMk(m))}/>
+
+        {/* Hero total del mes */}
+        {totalMes > 0 && (
+          <div className="hero-card" style={{marginBottom:16}}>
+            <div className="hero-label">Comprometido en cuotas</div>
+            <div className="hero-amount">{formatARS(totalMes)}</div>
+            <div style={{fontSize:13,color:"var(--muted)",marginTop:6}}>
+              {cuotasMes.length} cuota{cuotasMes.length!==1?"s":""} de {[...new Set(cuotasMes.map(c=>c.compra.id))].length} compra{[...new Set(cuotasMes.map(c=>c.compra.id))].length!==1?"s":""}
+            </div>
+          </div>
+        )}
+
+        {/* Alerta liberaciones */}
+        {liberaProxMes.length > 0 && (
+          <div style={{background:"rgba(34,197,94,.12)",border:"1px solid rgba(34,197,94,.3)",borderRadius:"var(--radius)",padding:"12px 16px",marginBottom:16}}>
+            <div style={{fontWeight:700,color:"var(--success)",marginBottom:4}}>🎉 Se libera este mes</div>
+            {liberaProxMes.map(c=>(
+              <div key={c.id} style={{fontSize:13,color:"var(--text)",display:"flex",justifyContent:"space-between"}}>
+                <span>{c.descripcion}</span>
+                <span style={{color:"var(--success)",fontWeight:700}}>−{formatARS(c.monto_cuota)}/mes</span>
+              </div>
+            ))}
+          </div>
+        )}
+
+        {/* Lista de cuotas */}
+        {cuotasMes.length === 0
+          ? <Vacio icon="📋" titulo="Sin cuotas este mes" sub="Tocá + para cargar una compra en cuotas"/>
+          : cuotasMes.map(({ compra: c, num, monto }) => {
+            const cat = getCat(c.categoria);
+            return (
+              <div key={c.id} className="medio-card" onClick={()=>onEditar(c)} style={{cursor:"pointer"}}>
+                <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start"}}>
+                  <div style={{flex:1,minWidth:0}}>
+                    <div style={{fontWeight:700,fontSize:15}}>{c.descripcion}</div>
+                    <div style={{fontSize:12,color:"var(--muted)",marginTop:2}}>
+                      {cat.icon} {cat.name} · cuota {num}/{c.cuotas_total}
+                    </div>
+                  </div>
+                  <div style={{textAlign:"right"}}>
+                    <div style={{fontWeight:800,fontSize:17,color:"var(--accent)"}}>{formatARS(monto)}</div>
+                    <div style={{fontSize:11,color:"var(--muted)"}}>de {formatARS(c.monto_total)}</div>
+                  </div>
+                </div>
+                <div className="barra-track" style={{height:5,marginTop:10}}>
+                  <div className="barra-fill" style={{width:`${(num/c.cuotas_total*100).toFixed(0)}%`,background:"var(--grad)"}}/>
+                </div>
+              </div>
+            );
+          })
+        }
+      </>}
+
+      {vista==="proyeccion" && <>
+        <div style={{fontSize:13,color:"var(--muted)",marginBottom:16}}>
+          Proyección de cuotas comprometidas — próximos 12 meses
+        </div>
+
+        {/* Comparativa deuda nueva vs liberada */}
+        {(() => {
+          const nuevaDeudaMes = compras.filter(c=>c.activa && fechaToMes(c.fecha_primera_cuota)===currentMonth()).reduce((s,c)=>s+Number(c.monto_cuota),0);
+          const liberadoMes   = compras.filter(c=>c.activa && mesUltimaCuota(c)===currentMonth()).reduce((s,c)=>s+Number(c.monto_cuota),0);
+          if (nuevaDeudaMes > 0 || liberadoMes > 0) return (
+            <div style={{display:"flex",gap:8,marginBottom:16}}>
+              <div style={{flex:1,background:"rgba(239,68,68,.1)",border:"1px solid rgba(239,68,68,.2)",borderRadius:"var(--radius)",padding:"10px 14px"}}>
+                <div style={{fontSize:11,color:"var(--muted)"}}>Nueva deuda este mes</div>
+                <div style={{fontWeight:800,color:"var(--danger)"}}>{formatARS(nuevaDeudaMes)}/mes</div>
+              </div>
+              <div style={{flex:1,background:"rgba(34,197,94,.1)",border:"1px solid rgba(34,197,94,.2)",borderRadius:"var(--radius)",padding:"10px 14px"}}>
+                <div style={{fontSize:11,color:"var(--muted)"}}>Liberado este mes</div>
+                <div style={{fontWeight:800,color:"var(--success)"}}>{formatARS(liberadoMes)}/mes</div>
+              </div>
+            </div>
+          );
+        })()}
+
+        {proyeccion.map(({ mes: m, total: tot, libera }) => {
+          const esHoy    = m === currentMonth();
+          const maxTotal = Math.max(...proyeccion.map(p => p.total), 1);
+          const pct      = (tot / maxTotal) * 100;
+          const [y, mo]  = m.split("-").map(Number);
+          const label    = new Date(y, mo-1, 1).toLocaleDateString("es-AR", {month:"short", year:"2-digit"});
+          return (
+            <div key={m} style={{marginBottom:12}}>
+              <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:4}}>
+                <div style={{display:"flex",alignItems:"center",gap:8}}>
+                  <span style={{fontSize:13,fontWeight:esHoy?800:500,color:esHoy?"var(--accent)":"var(--text)",minWidth:52}}>{label}</span>
+                  {libera.length > 0 && (
+                    <span style={{fontSize:11,background:"rgba(34,197,94,.15)",color:"var(--success)",borderRadius:99,padding:"1px 8px"}}>
+                      libera {libera.length}
+                    </span>
+                  )}
+                </div>
+                <span style={{fontWeight:700,fontSize:14,color:tot===0?"var(--muted)":"var(--text)"}}>{tot>0?formatARS(tot):"libre"}</span>
+              </div>
+              <div className="barra-track" style={{height:7}}>
+                <div className="barra-fill" style={{width:`${pct.toFixed(0)}%`,
+                  background:esHoy?"var(--accent)":tot===0?"transparent":"var(--grad)",
+                  opacity:esHoy?1:0.6}}/>
+              </div>
+              {libera.length > 0 && (
+                <div style={{fontSize:11,color:"var(--success)",marginTop:3}}>
+                  Termina{libera.length>1?"n":""}: {libera.map(c=>c.descripcion).join(", ")}
+                </div>
+              )}
+            </div>
+          );
+        })}
+
+        {compras.filter(c=>c.activa).length === 0 && (
+          <Vacio icon="📈" titulo="Sin compras en cuotas" sub="Cargá una compra para ver la proyección"/>
+        )}
+      </>}
+
+      <button className="fab" onClick={onNueva}>+</button>
+    </>
+  );
+}
+
+// ─── CompraModal ──────────────────────────────────────────────────────────────
+function CompraModal({ compra, saving, onGuardar, onEliminar, onCerrar }) {
+  const [form, setForm] = useState({
+    descripcion:         compra?.descripcion         || "",
+    categoria:           compra?.categoria           || "",
+    monto_total:         compra?.monto_total         ? String(compra.monto_total) : "",
+    cuotas_total:        compra?.cuotas_total        ? Number(compra.cuotas_total) : 12,
+    monto_cuota_custom:  "",
+    fecha_primera_cuota: compra?.fecha_primera_cuota || todayStr(),
+  });
+  const set = (k, v) => setForm(f => ({ ...f, [k]: v }));
+
+  const montoNum   = Number(form.monto_total) || 0;
+  const cuotasNum  = Number(form.cuotas_total) || 1;
+  const cuotaAuto  = cuotasNum > 0 && montoNum > 0 ? Math.round(montoNum / cuotasNum) : 0;
+  const cuotaFinal = form.monto_cuota_custom ? Number(form.monto_cuota_custom) : cuotaAuto;
+  const esValido   = form.descripcion && montoNum > 0 && cuotasNum > 0 && form.fecha_primera_cuota;
+
+  const CUOTAS_OPTS = [1,2,3,6,9,12,18,24,36];
+
+  return (
+    <Modal titulo={compra ? "Editar compra" : "Nueva compra en cuotas"} onCerrar={onCerrar}>
+      <Campo label="Descripción">
+        <input type="text" placeholder="Ej: TV Samsung, Viaje Cancún…"
+          value={form.descripcion} onChange={e=>set("descripcion",e.target.value)}/>
+      </Campo>
+      <Campo label="Categoría">
+        <div className="cat-picker">
+          {CATS.map(c=>(
+            <button key={c.id} type="button"
+              className={`cat-opt${form.categoria===c.id?" sel":""}`}
+              onClick={()=>set("categoria", form.categoria===c.id?"":c.id)}>
+              {c.icon}
+            </button>
+          ))}
+        </div>
+      </Campo>
+      <Campo label="Monto total">
+        <input type="number" inputMode="decimal" placeholder="Ej: 120000"
+          value={form.monto_total} onChange={e=>set("monto_total",e.target.value)}/>
+      </Campo>
+      <Campo label="Cantidad de cuotas">
+        <div style={{display:"flex",flexWrap:"wrap",gap:8}}>
+          {CUOTAS_OPTS.map(n=>(
+            <button key={n} type="button"
+              style={{padding:"8px 14px",borderRadius:"var(--radius)",border:"none",cursor:"pointer",fontWeight:700,fontSize:13,
+                background:form.cuotas_total===n?"var(--accent)":"var(--card2)",
+                color:form.cuotas_total===n?"#fff":"var(--text)"}}
+              onClick={()=>{set("cuotas_total",n); set("monto_cuota_custom","");}}>
+              {n===1?"Sin cuotas":`${n}x`}
+            </button>
+          ))}
+        </div>
+      </Campo>
+      <Campo label={`Monto por cuota${cuotaAuto>0?` (auto: ${formatARS(cuotaAuto)})`:""}`}>
+        <input type="number" inputMode="decimal"
+          placeholder={cuotaAuto>0?String(cuotaAuto):"Calculado automáticamente"}
+          value={form.monto_cuota_custom}
+          onChange={e=>set("monto_cuota_custom",e.target.value)}/>
+        <div style={{fontSize:11,color:"var(--muted)",marginTop:4}}>
+          Dejá vacío para dividir automáticamente. Completá si hay recargo distinto.
+        </div>
+      </Campo>
+      <Campo label="Fecha primera cuota">
+        <input type="date" value={form.fecha_primera_cuota}
+          onChange={e=>set("fecha_primera_cuota",e.target.value)}/>
+      </Campo>
+      {cuotaFinal>0 && cuotasNum>1 && (
+        <div style={{background:"var(--card2)",borderRadius:"var(--radius)",padding:"12px 16px",fontSize:13,marginBottom:8}}>
+          <span style={{color:"var(--muted)"}}>Resumen: </span>
+          <strong>{cuotasNum} cuotas</strong> de <strong style={{color:"var(--accent)"}}>{formatARS(cuotaFinal)}</strong>
+          {form.monto_cuota_custom && (
+            <span style={{color:"var(--muted)"}}> · total {formatARS(cuotaFinal*cuotasNum)}</span>
+          )}
+        </div>
+      )}
+      <button className="btn-primario" disabled={!esValido||saving}
+        onClick={()=>onGuardar(form)}>
+        {saving?"Guardando…":compra?"Guardar cambios":"Cargar compra"}
+      </button>
+      {onEliminar && (
+        <button className="btn-peligro" onClick={onEliminar} disabled={saving}>
+          Eliminar compra
+        </button>
+      )}
+    </Modal>
   );
 }
 
