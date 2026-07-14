@@ -1,23 +1,26 @@
 import { useState, useEffect } from "react";
+import { createClient } from "@supabase/supabase-js";
 
 // ─── Supabase ─────────────────────────────────────────────────────────────────
-const SUPA_URL = import.meta.env.VITE_SUPABASE_URL;
-const SUPA_KEY = import.meta.env.VITE_SUPABASE_ANON_KEY;
+const supabase = createClient(
+  import.meta.env.VITE_SUPABASE_URL,
+  import.meta.env.VITE_SUPABASE_ANON_KEY
+);
 
-async function api(table, method = "GET", body = null, params = "") {
-  const res = await fetch(`${SUPA_URL}/rest/v1/${table}${params}`, {
-    method,
-    headers: {
-      apikey: SUPA_KEY,
-      Authorization: `Bearer ${SUPA_KEY}`,
-      "Content-Type": "application/json",
-      Prefer: method === "POST" ? "resolution=merge-duplicates" : "",
-    },
-    body: body ? JSON.stringify(body) : null,
-  });
-  if (!res.ok) throw new Error(await res.text());
-  if (method === "GET") return res.json();
-  return true;
+async function dbGet(table, order) {
+  const q = supabase.from(table).select("*");
+  if (order) q.order(order.col, { ascending: order.asc ?? true });
+  const { data, error } = await q;
+  if (error) throw new Error(error.message);
+  return data ?? [];
+}
+async function dbUpsert(table, rows) {
+  const { error } = await supabase.from(table).upsert(rows);
+  if (error) throw new Error(error.message);
+}
+async function dbDelete(table, id) {
+  const { error } = await supabase.from(table).delete().eq("id", id);
+  if (error) throw new Error(error.message);
 }
 
 // ─── Utils ────────────────────────────────────────────────────────────────────
@@ -185,13 +188,12 @@ export default function App() {
   function navTo(id) { setTab(id); setDrawer(false); }
 
   async function recargar() {
-    const [exp,fix] = await Promise.all([
-      api("expenses",       "GET", null, "?order=date.desc"),
-      api("fixed_expenses", "GET", null, "?order=created_at.asc"),
+    const [exp, fix] = await Promise.all([
+      dbGet("expenses",       { col:"date",       asc:false }),
+      dbGet("fixed_expenses", { col:"created_at", asc:true  }),
     ]);
-    setGastos(Array.isArray(exp)?exp:[]);
-    setFijos(Array.isArray(fix)?fix:[]);
-    return { exp:Array.isArray(exp)?exp:[], fix:Array.isArray(fix)?fix:[] };
+    setGastos(exp); setFijos(fix);
+    return { exp, fix };
   }
 
   useEffect(()=>{
@@ -202,11 +204,11 @@ export default function App() {
         const mk = currentMonth();
         const faltantes = fix.filter(f=>!exp.some(e=>e.fixed_ref===f.id && dateToMonth(e.date)===mk));
         if (faltantes.length>0) {
-          await Promise.all(faltantes.map(f=>api("expenses","POST",[{
+          await dbUpsert("expenses", faltantes.map(f=>({
             id:uid(), description:f.description, amount:f.amount,
             category:f.category, card:f.card,
             date:todayStr(), is_fixed:true, fixed_ref:f.id,
-          }])));
+          })));
           await recargar();
         }
       } catch(e){ console.error(e.message); }
@@ -232,12 +234,11 @@ export default function App() {
   async function guardarGasto(data) {
     setSaving(true);
     try {
-      await api("expenses","POST",[{
+      await dbUpsert("expenses", [{
         id: editing?.id || uid(),
         description: data.description, amount: Number(data.amount),
         category: data.category, card: data.card,
-
-        date: data.date, is_fixed:false, fixed_ref:null,
+        date: data.date, is_fixed: false, fixed_ref: null,
       }]);
       await recargar(); cerrarModal();
     } catch(e){ alert("Error al guardar: "+e.message); }
@@ -245,7 +246,7 @@ export default function App() {
   }
   async function eliminarGasto(id) {
     setSaving(true);
-    try { await api("expenses","DELETE",null,`?id=eq.${id}`); await recargar(); cerrarModal(); }
+    try { await dbDelete("expenses", id); await recargar(); cerrarModal(); }
     catch(e){ alert(e.message); }
     setSaving(false);
   }
@@ -253,9 +254,9 @@ export default function App() {
     setSaving(true);
     try {
       const fid = editing?.id || uid();
-      await api("fixed_expenses","POST",[{id:fid, description:data.description, amount:Number(data.amount), category:data.category, card:data.card}]);
+      await dbUpsert("fixed_expenses", [{id:fid, description:data.description, amount:Number(data.amount), category:data.category, card:data.card}]);
       if (!editing) {
-        await api("expenses","POST",[{id:uid(), description:data.description, amount:Number(data.amount), category:data.category, card:data.card, date:todayStr(), is_fixed:true, fixed_ref:fid}]);
+        await dbUpsert("expenses", [{id:uid(), description:data.description, amount:Number(data.amount), category:data.category, card:data.card, date:todayStr(), is_fixed:true, fixed_ref:fid}]);
       }
       await recargar(); cerrarModal();
     } catch(e){ alert(e.message); }
@@ -263,7 +264,7 @@ export default function App() {
   }
   async function eliminarFijo(id) {
     setSaving(true);
-    try { await api("fixed_expenses","DELETE",null,`?id=eq.${id}`); await recargar(); cerrarModal(); }
+    try { await dbDelete("fixed_expenses", id); await recargar(); cerrarModal(); }
     catch(e){ alert(e.message); }
     setSaving(false);
   }
