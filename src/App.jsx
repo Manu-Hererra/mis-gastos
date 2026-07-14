@@ -410,16 +410,22 @@ export default function App() {
   }
 
   // ─── Inversiones ─────────────────────────────────────────────────────────────
+  function fetchConTimeout(url, ms=10000) {
+    return Promise.race([
+      fetch(url),
+      new Promise((_,r)=>setTimeout(()=>r(new Error("timeout")),ms)),
+    ]);
+  }
+
   async function fetchPrecioYahoo(ticker) {
     const yahooUrl = `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(ticker)}?interval=1d&range=1d`;
     const proxies = [
       `https://corsproxy.io/?${encodeURIComponent(yahooUrl)}`,
       `https://api.allorigins.win/raw?url=${encodeURIComponent(yahooUrl)}`,
-      yahooUrl,
     ];
     for (const url of proxies) {
       try {
-        const r = await fetch(url, { signal: AbortSignal.timeout(8000) });
+        const r = await fetchConTimeout(url);
         if (!r.ok) continue;
         const d = await r.json();
         const result = d?.chart?.result?.[0];
