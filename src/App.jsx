@@ -305,12 +305,21 @@ export default function App() {
           id: editing?.id || uid(),
           description: data.description, amount: Number(data.amount),
           category: data.category, card: data.card,
-          date: data.date, is_fixed: false, fixed_ref: null,
+          date: data.date, is_fixed: editing?.is_fixed ?? false,
+          fixed_ref: editing?.fixed_ref ?? null,
           cuotas: editing?.cuotas ?? null,
           cuota_num: editing?.cuota_num ?? null,
           cuota_grupo: editing?.cuota_grupo ?? null,
           tags: data.tags || null,
         }]);
+        // Si es un gasto fijo, actualizar también el template
+        if (editing?.is_fixed && editing?.fixed_ref) {
+          await dbUpsert("fixed_expenses", [{
+            id: editing.fixed_ref,
+            description: data.description, amount: Number(data.amount),
+            category: data.category, card: data.card,
+          }]);
+        }
       }
       await recargar(); cerrarModal();
     } catch(e){ alert("Error al guardar: "+e.message); }
