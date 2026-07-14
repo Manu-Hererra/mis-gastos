@@ -460,7 +460,7 @@ export default function App() {
             {tab==="gastos"   && <GastosTab gastos={gastosPeriodo} label={labelPeriod} total={totalPeriodo} vista={vista} diaClose={diaClose} esActual={esActual} onPrev={irPrev} onNext={irNext} onCambiarVista={cambiarVista} onAgregar={()=>abrirModal("gasto")} onEditar={e=>abrirModal("gasto",e)}/>}
             {tab==="fijos"    && <FijosTab fijos={fijos} onAgregar={()=>abrirModal("fijo")} onEditar={f=>abrirModal("fijo",f)}/>}
             {tab==="medios"   && <MediosTab gastos={gastosPeriodo} total={totalPeriodo} label={labelPeriod} esActual={esActual} onPrev={irPrev} onNext={irNext}/>}
-            {tab==="analisis" && <AnalisisTab gastos={gastosPeriodo} todosGastos={gastos} total={totalPeriodo} label={labelPeriod} sueldo={sueldo} esActual={esActual} onPrev={irPrev} onNext={irNext} onEditarSueldo={()=>abrirModal("settings")} dolar={dolar} diaClose={diaClose}/>}
+            {tab==="analisis" && <AnalisisTab gastos={gastosPeriodo} todosGastos={gastos} total={totalPeriodo} label={labelPeriod} sueldo={sueldo} esActual={esActual} onPrev={irPrev} onNext={irNext} onEditarSueldo={()=>abrirModal("settings")} dolar={dolar} diaClose={diaClose} period={period} vista={vista}/>}
             {tab==="metas"    && <MetasTab metas={metas} contribuciones={contribuciones} saving={saving} onNuevaMeta={()=>abrirModal("meta")} onEditarMeta={m=>abrirModal("meta",m)} onEliminarMeta={id=>eliminarMeta(id)} onAgregarAporte={m=>abrirModal("contribucion",m)} onEliminarAporte={id=>eliminarContribucion(id)}/>}
           </div>
         </div>
@@ -807,7 +807,7 @@ function MediosTab({ gastos, total, label, esActual, onPrev, onNext }) {
 }
 
 // ─── Análisis ─────────────────────────────────────────────────────────────────
-function AnalisisTab({ gastos, todosGastos, total, label, sueldo, esActual, onPrev, onNext, onEditarSueldo, dolar, diaClose }) {
+function AnalisisTab({ gastos, todosGastos, total, label, sueldo, esActual, onPrev, onNext, onEditarSueldo, dolar, diaClose, period, vista }) {
   const ahorro    = sueldo - total;
   const pctGasto  = sueldo > 0 ? Math.min(100,(total/sueldo)*100) : 0;
   const pctAhorro = sueldo > 0 ? Math.max(0,(ahorro/sueldo)*100) : 0;
@@ -822,9 +822,22 @@ function AnalisisTab({ gastos, todosGastos, total, label, sueldo, esActual, onPr
   const hoy = new Date();
   const diasTranscurridos = esActual ? hoy.getDate() : new Date(hoy.getFullYear(), hoy.getMonth()+1, 0).getDate();
   const promDia = diasTranscurridos > 0 ? total / diasTranscurridos : 0;
+  const daysInMonth = new Date(hoy.getFullYear(), hoy.getMonth() + 1, 0).getDate();
+  const proyeccion = diasTranscurridos > 0 ? (total / diasTranscurridos) * daysInMonth : 0;
+
+  const prevPeriodo = prevMk(period);
+  const gastosPrevPeriodo = todosGastos.filter(e =>
+    vista === "cierre" && diaClose
+      ? dateToPeriodo(e.date, diaClose) === prevPeriodo
+      : dateToMonth(e.date) === prevPeriodo
+  );
+  const compCats = CATS.map(c => {
+    const actual   = gastos.filter(e=>e.category===c.id).reduce((s,e)=>s+Number(e.amount),0);
+    const anterior = gastosPrevPeriodo.filter(e=>e.category===c.id).reduce((s,e)=>s+Number(e.amount),0);
+    return { ...c, actual, anterior };
+  }).filter(c=>c.actual>0||c.anterior>0).sort((a,b)=>b.actual-a.actual);
 
   // ── Comparativa 6 meses ──
-  const hoy = new Date();
   const ultimos6 = Array.from({length:6},(_,i)=>{
     const d = new Date(hoy.getFullYear(), hoy.getMonth()-5+i, 1);
     const mk = `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}`;
@@ -921,6 +934,33 @@ function AnalisisTab({ gastos, todosGastos, total, label, sueldo, esActual, onPr
               <div className="stat-val" style={{color:s.color,fontSize:s.label==="Prom/día"?14:22}}>{s.val}</div>
             </div>
           ))}
+        </div>
+      )}
+
+      {/* Proyección de fin de mes */}
+      {esActual && vista==="mes" && total>0 && (
+        <div className="analysis-card">
+          <div className="card-titulo">📅 Proyección de fin de mes</div>
+          <div className="proy-row">
+            <div>
+              <div className="proy-amount">{formatARS(proyeccion)}</div>
+              <div style={{fontSize:12,color:"var(--muted)",marginTop:2}}>
+                estimado al cierre · día {hoy.getDate()}/{daysInMonth}
+              </div>
+            </div>
+            {sueldo>0 && (
+              <div className="proy-delta" style={{color:proyeccion>sueldo?"var(--danger)":"var(--success)"}}>
+                <div style={{fontSize:10,fontWeight:700,textTransform:"uppercase",letterSpacing:.4,marginBottom:2}}>
+                  {proyeccion>sueldo?"Déficit estim.":"Ahorro estim."}
+                </div>
+                <div style={{fontSize:20,fontWeight:800}}>{formatARS(Math.abs(sueldo-proyeccion))}</div>
+              </div>
+            )}
+          </div>
+          <div style={{fontSize:12,color:"var(--muted)",marginTop:10}}>
+            Ritmo: {formatARS(promDia)}/día × {daysInMonth-hoy.getDate()} días restantes ≈{" "}
+            <span style={{color:"var(--text)",fontWeight:600}}>{formatARS((daysInMonth-hoy.getDate())*promDia)}</span> más estimados
+          </div>
         </div>
       )}
 
@@ -1040,6 +1080,36 @@ function AnalisisTab({ gastos, todosGastos, total, label, sueldo, esActual, onPr
                 <div className="barra-track" style={{marginTop:7}}>
                   <div className="barra-fill" style={{width:`${pct.toFixed(0)}%`,background:c.color}}/>
                 </div>
+              </div>
+            );
+          })}
+        </div>
+      )}
+
+      {/* Comparativa por categoría vs período anterior */}
+      {compCats.length>0 && gastosPrevPeriodo.length>0 && (
+        <div className="analysis-card">
+          <div className="card-titulo">🔀 Categorías vs período anterior</div>
+          {compCats.map(c=>{
+            const diff = c.actual - c.anterior;
+            const pct  = c.anterior>0 ? Math.abs((diff/c.anterior)*100) : null;
+            const sube = diff>0;
+            return (
+              <div key={c.id} className="cat-comp-row">
+                <span className="cat-comp-icon" style={{background:c.color+"1a"}}>{c.icon}</span>
+                <div className="cat-comp-info">
+                  <div className="cat-comp-nombre">{c.name}</div>
+                  <div className="cat-comp-montos">
+                    <span style={{fontWeight:700,color:c.color}}>{formatARS(c.actual)}</span>
+                    {c.anterior>0 && <span style={{color:"var(--muted)",fontSize:11}}> vs {formatARS(c.anterior)}</span>}
+                  </div>
+                </div>
+                {diff!==0 && (
+                  <div className="cat-comp-delta" style={{color:sube?"var(--danger)":"var(--success)"}}>
+                    {sube?"▲":"▼"}{pct!==null?` ${pct.toFixed(0)}%`:""}
+                  </div>
+                )}
+                {diff===0 && c.anterior>0 && <div style={{color:"var(--muted)",fontSize:12,flexShrink:0}}>—</div>}
               </div>
             );
           })}
@@ -1637,6 +1707,20 @@ const CSS = `
   .cat-row    { padding:11px 0; border-bottom:1px solid rgba(59,130,246,.06); }
   .cat-row:last-child { border-bottom:none; }
   .cat-row-top { display:flex; justify-content:space-between; align-items:center; font-size:14px; }
+
+  /* ── Proyección ── */
+  .proy-row { display:flex; justify-content:space-between; align-items:flex-start; gap:12px; }
+  .proy-amount { font-size:28px; font-weight:800; letter-spacing:-1px; }
+  .proy-delta { text-align:right; flex-shrink:0; }
+
+  /* ── Comparativa categorías ── */
+  .cat-comp-row { display:flex; align-items:center; gap:12px; padding:11px 0; border-bottom:1px solid rgba(59,130,246,.06); }
+  .cat-comp-row:last-child { border-bottom:none; padding-bottom:0; }
+  .cat-comp-icon { width:36px; height:36px; border-radius:10px; display:flex; align-items:center; justify-content:center; font-size:18px; flex-shrink:0; }
+  .cat-comp-info { flex:1; min-width:0; }
+  .cat-comp-nombre { font-size:13px; font-weight:600; margin-bottom:2px; }
+  .cat-comp-montos { font-size:13px; }
+  .cat-comp-delta { font-size:14px; font-weight:800; flex-shrink:0; letter-spacing:-.3px; }
 
   /* ── Vacío ── */
   .vacio { text-align:center; padding:56px 20px; color:var(--muted); }
