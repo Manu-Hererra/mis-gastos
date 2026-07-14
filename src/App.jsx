@@ -1,0 +1,1029 @@
+import { useState, useEffect } from "react";
+
+// ─── Supabase ─────────────────────────────────────────────────────────────────
+const SUPA_URL = import.meta.env.VITE_SUPABASE_URL;
+const SUPA_KEY = import.meta.env.VITE_SUPABASE_ANON_KEY;
+
+async function api(table, method = "GET", body = null, params = "") {
+  const res = await fetch(`${SUPA_URL}/rest/v1/${table}${params}`, {
+    method,
+    headers: {
+      apikey: SUPA_KEY,
+      Authorization: `Bearer ${SUPA_KEY}`,
+      "Content-Type": "application/json",
+      Prefer: method === "POST" ? "resolution=merge-duplicates" : "",
+    },
+    body: body ? JSON.stringify(body) : null,
+  });
+  if (!res.ok) throw new Error(await res.text());
+  if (method === "GET") return res.json();
+  return true;
+}
+
+// ─── Utils ────────────────────────────────────────────────────────────────────
+function uid() { return Date.now().toString(36) + Math.random().toString(36).slice(2); }
+
+function todayStr() {
+  const d = new Date();
+  return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}-${String(d.getDate()).padStart(2,"0")}`;
+}
+function currentMonth() {
+  const d = new Date();
+  return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}`;
+}
+function dateToMonth(s) {
+  const d = new Date(s + "T12:00:00");
+  return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}`;
+}
+function dateToPeriodo(s, dc) {
+  const d = new Date(s + "T12:00:00");
+  if (d.getDate() <= dc) return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}`;
+  const n = new Date(d.getFullYear(), d.getMonth()+1, 1);
+  return `${n.getFullYear()}-${String(n.getMonth()+1).padStart(2,"0")}`;
+}
+function currentPeriodo(dc) {
+  const d = new Date();
+  if (d.getDate() <= dc) return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}`;
+  const n = new Date(d.getFullYear(), d.getMonth()+1, 1);
+  return `${n.getFullYear()}-${String(n.getMonth()+1).padStart(2,"0")}`;
+}
+function prevMk(mk) {
+  const [y,m] = mk.split("-").map(Number);
+  const d = new Date(y,m-2,1);
+  return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}`;
+}
+function nextMk(mk) {
+  const [y,m] = mk.split("-").map(Number);
+  const d = new Date(y,m,1);
+  return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}`;
+}
+function monthLabel(mk) {
+  const [y,m] = mk.split("-").map(Number);
+  return new Date(y,m-1,1).toLocaleDateString("es-AR",{month:"long",year:"numeric"});
+}
+function periodoLabel(mk,dc) {
+  const [y,m] = mk.split("-").map(Number);
+  const fmt = d => d.toLocaleDateString("es-AR",{day:"numeric",month:"short"});
+  return `${fmt(new Date(y,m-2,dc+1))} – ${fmt(new Date(y,m-1,dc))}`;
+}
+function dateLabel(s) {
+  const tod  = todayStr();
+  const d    = new Date(); d.setDate(d.getDate()-1);
+  const yest = `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}-${String(d.getDate()).padStart(2,"0")}`;
+  if (s===tod)  return "Hoy";
+  if (s===yest) return "Ayer";
+  return new Date(s+"T12:00:00").toLocaleDateString("es-AR",{weekday:"long",day:"numeric",month:"long"});
+}
+function formatARS(n) {
+  return new Intl.NumberFormat("es-AR",{style:"currency",currency:"ARS",maximumFractionDigits:0}).format(n||0);
+}
+function greeting() {
+  const h = new Date().getHours();
+  if (h < 12) return ["Buenos días", "☀️"];
+  if (h < 20) return ["Buenas tardes", "🌤️"];
+  return ["Buenas noches", "🌙"];
+}
+function loadSettings() {
+  try { return JSON.parse(localStorage.getItem("mg_settings")||"{}"); } catch { return {}; }
+}
+
+// ─── Datos estáticos ──────────────────────────────────────────────────────────
+const MEDIOS = [
+  { id:"efectivo", name:"Efectivo", icon:"💵", color:"#10b981" },
+  { id:"debito",   name:"Débito",   icon:"🏦", color:"#3b82f6" },
+  { id:"credito",  name:"Crédito",  icon:"💳", color:"#f59e0b" },
+];
+const CATS = [
+  { id:"hogar",         name:"Hogar",        icon:"🏡", color:"#6366f1" },
+  { id:"expensas",      name:"Expensas",      icon:"🏢", color:"#8b5cf6" },
+  { id:"supermercado",  name:"Super",         icon:"🛒", color:"#10b981" },
+  { id:"transporte",    name:"Transporte",    icon:"🚌", color:"#3b82f6" },
+  { id:"salidas",       name:"Salidas",       icon:"🍕", color:"#f59e0b" },
+  { id:"gym",           name:"Gym",           icon:"💪", color:"#ef4444" },
+  { id:"suscripciones", name:"Suscripciones", icon:"📱", color:"#ec4899" },
+  { id:"farmacia",      name:"Farmacia",      icon:"💊", color:"#14b8a6" },
+  { id:"indumentaria",  name:"Ropa",          icon:"👕", color:"#f97316" },
+  { id:"otros",         name:"Otros",         icon:"📦", color:"#94a3b8" },
+];
+const getCat   = id => CATS.find(c=>c.id===id)   ?? CATS[CATS.length-1];
+const getMedio = id => MEDIOS.find(m=>m.id===id) ?? MEDIOS[0];
+
+const NAV_ITEMS = [
+  { id:"home",     icon:"🏠", label:"Inicio"         },
+  { id:"gastos",   icon:"💸", label:"Gastos del mes"  },
+  { id:"fijos",    icon:"🔁", label:"Gastos fijos"    },
+  { id:"medios",   icon:"💳", label:"Medios de pago"  },
+  { id:"analisis", icon:"📊", label:"Análisis"        },
+];
+
+// ─── App ──────────────────────────────────────────────────────────────────────
+export default function App() {
+  const [tab,      setTab]      = useState("home");
+  const [drawer,   setDrawer]   = useState(false);
+  const [vista,    setVista]    = useState("mes");
+  const [period,   setPeriod]   = useState(currentMonth());
+  const [gastos,   setGastos]   = useState([]);
+  const [fijos,    setFijos]    = useState([]);
+  const [modal,    setModal]    = useState(null);
+  const [editing,  setEditing]  = useState(null);
+  const [loading,  setLoading]  = useState(true);
+  const [saving,   setSaving]   = useState(false);
+  const [settings, setSettings] = useState(loadSettings);
+
+  const diaClose = Number(settings.diaClose) || null;
+  const sueldo   = Number(settings.sueldo)   || 0;
+
+  function guardarSettings(data) {
+    const next = { ...settings, ...data };
+    setSettings(next);
+    localStorage.setItem("mg_settings", JSON.stringify(next));
+  }
+  function cambiarVista(v) {
+    setVista(v);
+    setPeriod(v==="cierre" && diaClose ? currentPeriodo(diaClose) : currentMonth());
+  }
+  function navTo(id) { setTab(id); setDrawer(false); }
+
+  async function recargar() {
+    const [exp,fix] = await Promise.all([
+      api("expenses",       "GET", null, "?order=date.desc"),
+      api("fixed_expenses", "GET", null, "?order=created_at.asc"),
+    ]);
+    setGastos(Array.isArray(exp)?exp:[]);
+    setFijos(Array.isArray(fix)?fix:[]);
+    return { exp:Array.isArray(exp)?exp:[], fix:Array.isArray(fix)?fix:[] };
+  }
+
+  useEffect(()=>{
+    (async()=>{
+      setLoading(true);
+      try {
+        const {exp,fix} = await recargar();
+        const mk = currentMonth();
+        const faltantes = fix.filter(f=>!exp.some(e=>e.fixed_ref===f.id && dateToMonth(e.date)===mk));
+        if (faltantes.length>0) {
+          await Promise.all(faltantes.map(f=>api("expenses","POST",[{
+            id:uid(), description:f.description, amount:f.amount,
+            category:f.category, card:f.card,
+            date:todayStr(), is_fixed:true, fixed_ref:f.id,
+          }])));
+          await recargar();
+        }
+      } catch(e){ console.error(e.message); }
+      setLoading(false);
+    })();
+  },[]);
+
+  const gastosPeriodo = gastos.filter(e =>
+    vista==="cierre" && diaClose
+      ? dateToPeriodo(e.date, diaClose)===period
+      : dateToMonth(e.date)===period
+  );
+  const totalPeriodo = gastosPeriodo.reduce((s,e)=>s+Number(e.amount),0);
+  const esActual = vista==="cierre" && diaClose
+    ? period===currentPeriodo(diaClose)
+    : period===currentMonth();
+  const labelPeriod = vista==="cierre" && diaClose
+    ? periodoLabel(period, diaClose) : monthLabel(period);
+
+  function irPrev() { setPeriod(prevMk(period)); }
+  function irNext() { if (!esActual) setPeriod(nextMk(period)); }
+
+  async function guardarGasto(data) {
+    setSaving(true);
+    try {
+      await api("expenses","POST",[{
+        id: editing?.id || uid(),
+        description: data.description, amount: Number(data.amount),
+        category: data.category, card: data.card,
+
+        date: data.date, is_fixed:false, fixed_ref:null,
+      }]);
+      await recargar(); cerrarModal();
+    } catch(e){ alert("Error al guardar: "+e.message); }
+    setSaving(false);
+  }
+  async function eliminarGasto(id) {
+    setSaving(true);
+    try { await api("expenses","DELETE",null,`?id=eq.${id}`); await recargar(); cerrarModal(); }
+    catch(e){ alert(e.message); }
+    setSaving(false);
+  }
+  async function guardarFijo(data) {
+    setSaving(true);
+    try {
+      const fid = editing?.id || uid();
+      await api("fixed_expenses","POST",[{id:fid, description:data.description, amount:Number(data.amount), category:data.category, card:data.card}]);
+      if (!editing) {
+        await api("expenses","POST",[{id:uid(), description:data.description, amount:Number(data.amount), category:data.category, card:data.card, date:todayStr(), is_fixed:true, fixed_ref:fid}]);
+      }
+      await recargar(); cerrarModal();
+    } catch(e){ alert(e.message); }
+    setSaving(false);
+  }
+  async function eliminarFijo(id) {
+    setSaving(true);
+    try { await api("fixed_expenses","DELETE",null,`?id=eq.${id}`); await recargar(); cerrarModal(); }
+    catch(e){ alert(e.message); }
+    setSaving(false);
+  }
+
+  function abrirModal(tipo, item=null) { setEditing(item); setModal(tipo); }
+  function cerrarModal()               { setModal(null); setEditing(null); }
+
+  if (loading) return <Splash />;
+
+  const gastosMesActual = gastos.filter(e=>dateToMonth(e.date)===currentMonth());
+  const totalMesActual  = gastosMesActual.reduce((s,e)=>s+Number(e.amount),0);
+
+  return (
+    <>
+      <style>{CSS}</style>
+      <div className="app">
+
+        {/* Sidebar — siempre visible en desktop, drawer en mobile */}
+        <div className={`drawer-overlay${drawer?" open":""}`} onClick={()=>setDrawer(false)}/>
+        <aside className={`drawer${drawer?" open":""}`}>
+          <div className="drawer-header">
+            <div className="drawer-logo-wrap">
+              <span className="drawer-logo">💸</span>
+            </div>
+            <div>
+              <div className="drawer-app-name">Mis Gastos</div>
+              <div className="drawer-tagline">Control de finanzas</div>
+            </div>
+          </div>
+          <nav className="drawer-nav">
+            {NAV_ITEMS.map(n=>(
+              <button key={n.id} className={`drawer-item${tab===n.id?" active":""}`} onClick={()=>navTo(n.id)}>
+                <span className="drawer-icon">{n.icon}</span>
+                <span className="drawer-label">{n.label}</span>
+                {tab===n.id && <span className="drawer-pip"/>}
+              </button>
+            ))}
+          </nav>
+          <div className="drawer-footer">
+            <button className="drawer-cfg" onClick={()=>{setDrawer(false);abrirModal("settings");}}>
+              ⚙️ <span>Configuración</span>
+            </button>
+          </div>
+        </aside>
+
+        {/* Columna principal */}
+        <div className="main-col">
+          <header className={`topbar${tab==="home"?" topbar-home":""}`}>
+            <button className="ham-btn" onClick={()=>setDrawer(true)}>
+              <span/><span/><span/>
+            </button>
+            <div className="brand">
+              <span className="logo">💸</span>
+              <span className="app-name">Mis Gastos</span>
+            </div>
+            <div style={{display:"flex",gap:8,alignItems:"center"}}>
+              {saving && <span className="saving-txt">Guardando…</span>}
+              <button className="icon-btn" onClick={()=>abrirModal("settings")}>⚙️</button>
+            </div>
+          </header>
+
+          <div className="content">
+            {tab==="home"     && <HomeTab gastosMes={gastosMesActual} totalMes={totalMesActual} sueldo={sueldo} fijos={fijos} onNavTo={navTo} onAgregar={()=>abrirModal("gasto")}/>}
+            {tab==="gastos"   && <GastosTab gastos={gastosPeriodo} label={labelPeriod} total={totalPeriodo} vista={vista} diaClose={diaClose} esActual={esActual} onPrev={irPrev} onNext={irNext} onCambiarVista={cambiarVista} onAgregar={()=>abrirModal("gasto")} onEditar={e=>abrirModal("gasto",e)}/>}
+            {tab==="fijos"    && <FijosTab fijos={fijos} onAgregar={()=>abrirModal("fijo")} onEditar={f=>abrirModal("fijo",f)}/>}
+            {tab==="medios"   && <MediosTab gastos={gastosPeriodo} total={totalPeriodo} label={labelPeriod} esActual={esActual} onPrev={irPrev} onNext={irNext}/>}
+            {tab==="analisis" && <AnalisisTab gastos={gastosPeriodo} total={totalPeriodo} label={labelPeriod} sueldo={sueldo} esActual={esActual} onPrev={irPrev} onNext={irNext} onEditarSueldo={()=>abrirModal("settings")}/>}
+          </div>
+        </div>
+      </div>
+
+      {modal==="gasto"    && <GastoModal  gasto={editing}  saving={saving} onGuardar={guardarGasto}  onEliminar={editing?()=>eliminarGasto(editing.id):null}  onCerrar={cerrarModal}/>}
+      {modal==="fijo"     && <FijoModal   fijo={editing}   saving={saving} onGuardar={guardarFijo}   onEliminar={editing?()=>eliminarFijo(editing.id):null}    onCerrar={cerrarModal}/>}
+      {modal==="settings" && <SettingsModal settings={settings} onGuardar={guardarSettings} onCerrar={cerrarModal}/>}
+    </>
+  );
+}
+
+// ─── Home ─────────────────────────────────────────────────────────────────────
+function HomeTab({ gastosMes, totalMes, sueldo, fijos, onNavTo, onAgregar }) {
+  const [saludo, icono] = greeting();
+  const ahorro   = sueldo - totalMes;
+  const pctGasto = sueldo > 0 ? Math.min(100,(totalMes/sueldo)*100) : 0;
+  const recientes = [...gastosMes].sort((a,b)=>b.date.localeCompare(a.date)).slice(0,4);
+  const totalFijos = fijos.reduce((s,f)=>s+Number(f.amount),0);
+
+  const tips = [
+    "Registrá cada gasto en el momento para no olvidarlo.",
+    "Revisá tus suscripciones una vez al mes — siempre hay algo sin usar.",
+    "El primer paso para ahorrar es saber en qué gastás.",
+    "Pequeños gastos diarios se acumulan más de lo que parecen.",
+  ];
+  const tip = tips[new Date().getDate() % tips.length];
+
+  return (
+    <>
+      {/* Hero bienvenida */}
+      <div className="home-hero">
+        <div className="home-hero-glow"/>
+        <div className="home-icono-saludo">{icono}</div>
+        <div className="home-saludo">{saludo}</div>
+        <div className="home-subtitulo">Tus finanzas, bajo control</div>
+
+        {/* Resumen del mes */}
+        <div className="home-mes-card">
+          <div className="home-mes-label">{monthLabel(currentMonth())}</div>
+          <div className="home-mes-total">{formatARS(totalMes)}</div>
+          {sueldo > 0 && (
+            <div className="home-mes-ahorro">
+              {ahorro >= 0
+                ? <span className="ahorro-pos">Ahorrás {formatARS(ahorro)}</span>
+                : <span className="ahorro-neg">Déficit {formatARS(Math.abs(ahorro))}</span>
+              }
+            </div>
+          )}
+          {sueldo > 0 && (
+            <div className="home-barra-wrap">
+              <div className="home-barra-track">
+                <div className="home-barra-fill" style={{
+                  width:`${pctGasto}%`,
+                  background: pctGasto>90?"#f43f5e":pctGasto>70?"#fbbf24":"rgba(255,255,255,.85)"
+                }}/>
+              </div>
+              <div className="home-barra-pct">{pctGasto.toFixed(0)}% del sueldo</div>
+            </div>
+          )}
+        </div>
+      </div>
+
+      {/* Accesos rápidos */}
+      <div className="home-section-title">Secciones</div>
+      <div className="shortcuts-grid">
+        {[
+          {id:"gastos",   icon:"💸", label:"Gastos",   color:"#3b82f6"},
+          {id:"fijos",    icon:"🔁", label:"Fijos",    color:"#8b5cf6"},
+          {id:"medios",   icon:"💳", label:"Medios",   color:"#f59e0b"},
+          {id:"analisis", icon:"📊", label:"Análisis", color:"#10b981"},
+        ].map(s=>(
+          <button key={s.id} className="shortcut" onClick={()=>onNavTo(s.id)}
+            style={{"--sc":s.color}}>
+            <div className="shortcut-icon-wrap">{s.icon}</div>
+            <span className="shortcut-label">{s.label}</span>
+          </button>
+        ))}
+      </div>
+
+      {/* Mini stats */}
+      <div className="home-stats">
+        <div className="home-stat">
+          <span className="home-stat-val">{gastosMes.length}</span>
+          <span className="home-stat-label">movimientos</span>
+        </div>
+        <div className="home-stat-div"/>
+        <div className="home-stat">
+          <span className="home-stat-val">{formatARS(totalFijos)}</span>
+          <span className="home-stat-label">gastos fijos</span>
+        </div>
+        {sueldo > 0 && <>
+          <div className="home-stat-div"/>
+          <div className="home-stat">
+            <span className="home-stat-val" style={{color:ahorro>=0?"#34d399":"#f43f5e"}}>{ahorro>=0?"+":""}{pctGasto>0?(100-pctGasto).toFixed(0):0}%</span>
+            <span className="home-stat-label">ahorrado</span>
+          </div>
+        </>}
+      </div>
+
+      {/* Últimos gastos */}
+      {recientes.length > 0 && (
+        <>
+          <div className="home-section-row">
+            <span className="home-section-title" style={{margin:0}}>Últimos movimientos</span>
+            <button className="home-ver-mas" onClick={()=>onNavTo("gastos")}>Ver todos →</button>
+          </div>
+          <div className="lista-card" style={{marginBottom:16}}>
+            {recientes.map(e=><FilaGasto key={e.id} gasto={e} onClick={()=>{}}/>)}
+          </div>
+        </>
+      )}
+
+      {/* Tip del día */}
+      <div className="tip-card">
+        <span className="tip-icon">💡</span>
+        <span className="tip-text">{tip}</span>
+      </div>
+
+      {gastosMes.length===0 && (
+        <div className="vacio" style={{paddingTop:20}}>
+          <div className="vacio-icon">✨</div>
+          <div className="vacio-titulo">Empezá a registrar</div>
+          <div className="vacio-sub">Tocá + para agregar tu primer gasto</div>
+        </div>
+      )}
+
+      <button className="fab" onClick={onAgregar}>+</button>
+    </>
+  );
+}
+
+// ─── Gastos ───────────────────────────────────────────────────────────────────
+function GastosTab({ gastos, label, total, vista, diaClose, esActual, onPrev, onNext, onCambiarVista, onAgregar, onEditar }) {
+  const grupos = {};
+  gastos.forEach(e=>{ if(!grupos[e.date]) grupos[e.date]=[]; grupos[e.date].push(e); });
+  const fechas = Object.keys(grupos).sort((a,b)=>b.localeCompare(a));
+  return (
+    <>
+      <div className="vista-toggle">
+        <button className={`vista-btn${vista==="mes"?" active":""}`} onClick={()=>onCambiarVista("mes")}>Por mes</button>
+        <button className={`vista-btn${vista==="cierre"?" active":""}`} onClick={()=>onCambiarVista("cierre")} disabled={!diaClose} title={!diaClose?"Configurá el día de cierre en ⚙️":""}>
+          Por cierre {!diaClose&&"⚠️"}
+        </button>
+      </div>
+      <NavPeriod label={label} esActual={esActual} onPrev={onPrev} onNext={onNext}/>
+      <SummaryCard total={total} count={gastos.length} labelCount="movimiento"/>
+      {fechas.length===0
+        ? <Vacio icon="🧾" titulo="Sin gastos" sub="Tocá + para agregar"/>
+        : fechas.map(fecha=>(
+          <div key={fecha}>
+            <div className="fecha-label">{dateLabel(fecha)}</div>
+            <div className="lista-card">
+              {grupos[fecha].map(e=><FilaGasto key={e.id} gasto={e} onClick={()=>onEditar(e)}/>)}
+            </div>
+          </div>
+        ))
+      }
+      <button className="fab" onClick={onAgregar}>+</button>
+    </>
+  );
+}
+
+// ─── Fijos ────────────────────────────────────────────────────────────────────
+function FijosTab({ fijos, onAgregar, onEditar }) {
+  const total = fijos.reduce((s,f)=>s+Number(f.amount),0);
+  return (
+    <>
+      <div className="page-title">Gastos Fijos</div>
+      <div className="info-box">Se insertan automáticamente cada mes en Gastos del mes.</div>
+      {fijos.length>0 && <SummaryCard total={total} count={fijos.length} labelCount="gasto fijo"/>}
+      {fijos.length===0
+        ? <Vacio icon="🔁" titulo="Sin gastos fijos" sub="Agregá expensas, suscripciones, gym…"/>
+        : <div className="lista-card">{fijos.map(f=><FilaGasto key={f.id} gasto={f} onClick={()=>onEditar(f)} conSigno={false}/>)}</div>
+      }
+      <button className="btn-outline-add" onClick={onAgregar}>+ Agregar gasto fijo</button>
+    </>
+  );
+}
+
+// ─── Medios ───────────────────────────────────────────────────────────────────
+function MediosTab({ gastos, total, label, esActual, onPrev, onNext }) {
+  return (
+    <>
+      <NavPeriod label={label} esActual={esActual} onPrev={onPrev} onNext={onNext}/>
+      {MEDIOS.map(medio=>{
+        const mg  = gastos.filter(e=>e.card===medio.id);
+        const mt  = mg.reduce((s,e)=>s+Number(e.amount),0);
+        const pct = total>0?(mt/total)*100:0;
+        return (
+          <div key={medio.id} className="medio-card">
+            <div className="medio-top">
+              <div className="medio-nombre-row">
+                <span className="medio-icono">{medio.icon}</span>
+                <span className="medio-nombre">{medio.name}</span>
+              </div>
+              <span className="medio-cant">{mg.length} gasto{mg.length!==1?"s":""}</span>
+            </div>
+            <div className="medio-total" style={{color:medio.color}}>{formatARS(mt)}</div>
+            <div className="barra-track" style={{height:6}}>
+              <div className="barra-fill" style={{width:`${pct.toFixed(0)}%`,background:medio.color}}/>
+            </div>
+            {mg.length>0 && (
+              <div className="medio-lista">
+                {mg.slice(0,5).map(e=>{
+                  const cat=getCat(e.category);
+                  return (
+                    <div key={e.id} className="medio-fila">
+                      <span>{cat.icon} {e.description||cat.name}</span>
+                      <span style={{fontWeight:700}}>{formatARS(e.amount)}</span>
+                    </div>
+                  );
+                })}
+                {mg.length>5 && <div className="medio-mas">+{mg.length-5} más</div>}
+              </div>
+            )}
+          </div>
+        );
+      })}
+      {gastos.length===0 && <Vacio icon="💳" titulo="Sin gastos" sub="Navegá a Gastos del mes para agregar"/>}
+    </>
+  );
+}
+
+// ─── Análisis ─────────────────────────────────────────────────────────────────
+function AnalisisTab({ gastos, total, label, sueldo, esActual, onPrev, onNext, onEditarSueldo }) {
+  const ahorro   = sueldo-total;
+  const pctGasto = sueldo>0?Math.min(100,(total/sueldo)*100):0;
+  const pctAhorro= sueldo>0?Math.max(0,(ahorro/sueldo)*100):0;
+  const porCat   = CATS.map(c=>({...c,total:gastos.filter(e=>e.category===c.id).reduce((s,e)=>s+Number(e.amount),0)})).filter(c=>c.total>0).sort((a,b)=>b.total-a.total);
+
+  const tips2=[];
+  if (porCat.length>0) { const t=porCat[0]; tips2.push(`${t.icon} Mayor gasto: ${t.name} con ${formatARS(t.total)}${sueldo>0?` (${(t.total/sueldo*100).toFixed(0)}% del sueldo)`:""}.`); }
+  const sal=porCat.find(c=>c.id==="salidas"); if(sal&&sueldo>0&&sal.total/sueldo>0.15) tips2.push("🍕 Gastás más del 15% del sueldo en Salidas.");
+  const sus=porCat.find(c=>c.id==="suscripciones"); if(sus) tips2.push(`📱 ${formatARS(sus.total)} en Suscripciones. Revisá si usás todo.`);
+  if(sueldo>0&&pctAhorro<10&&ahorro>=0) tips2.push("⚠️ Ahorrás menos del 10%. El objetivo recomendado es 20%.");
+  if(sueldo>0&&ahorro<0) tips2.push(`🚨 Gastás más de lo que ganás. Diferencia: ${formatARS(Math.abs(ahorro))}.`);
+  if(sueldo===0) tips2.push("💡 Configurá tu sueldo en ⚙️ para ver el análisis completo.");
+
+  return (
+    <>
+      <NavPeriod label={label} esActual={esActual} onPrev={onPrev} onNext={onNext}/>
+      <div className="hero-card">
+        <div className="hero-label">Resumen del período</div>
+        {sueldo>0 ? (
+          <>
+            <div className="hero-amount" style={{color:ahorro>=0?undefined:"var(--danger)"}}>{ahorro>=0?"+":""}{formatARS(ahorro)}</div>
+            <div className="hero-sub">{ahorro>=0?"ahorrado este período":"gastado de más"}</div>
+            <div style={{marginTop:14}}>
+              <div style={{display:"flex",justifyContent:"space-between",fontSize:12,color:"var(--muted)",marginBottom:6}}>
+                <span>{formatARS(total)} ({pctGasto.toFixed(0)}%)</span>
+                <span>Sueldo {formatARS(sueldo)}</span>
+              </div>
+              <div className="barra-track" style={{height:8}}>
+                <div className="barra-fill" style={{width:`${pctGasto}%`,background:pctGasto>90?"var(--danger)":pctGasto>70?"var(--warn)":"var(--grad)"}}/>
+              </div>
+            </div>
+          </>
+        ) : (
+          <>
+            <div className="hero-amount">{formatARS(total)}</div>
+            <div className="hero-sub">total gastado</div>
+            <button className="btn-outline-add" style={{marginTop:14}} onClick={onEditarSueldo}>+ Configurar sueldo</button>
+          </>
+        )}
+      </div>
+      {sueldo>0 && (
+        <div className="stats-row">
+          {[
+            {label:"Gastado",    val:`${pctGasto.toFixed(0)}%`,  color:"var(--danger)"},
+            {label:"Ahorrado",   val:`${pctAhorro.toFixed(0)}%`, color:pctAhorro>=20?"var(--success)":"var(--warn)"},
+            {label:"Movimientos",val:gastos.length,               color:"var(--text)"},
+          ].map(s=>(
+            <div key={s.label} className="stat-card">
+              <div className="stat-label">{s.label}</div>
+              <div className="stat-val" style={{color:s.color}}>{s.val}</div>
+            </div>
+          ))}
+        </div>
+      )}
+      {tips2.length>0 && (
+        <div className="analysis-card">
+          <div className="card-titulo">Análisis</div>
+          {tips2.map((t,i)=><div key={i} className="sugerencia">{t}</div>)}
+        </div>
+      )}
+      {porCat.length>0 && (
+        <div className="analysis-card">
+          <div className="card-titulo">Por categoría</div>
+          {porCat.map(c=>{
+            const pct=total>0?(c.total/total*100):0;
+            const ps=sueldo>0?(c.total/sueldo*100).toFixed(0):null;
+            return (
+              <div key={c.id} className="cat-row">
+                <div className="cat-row-top">
+                  <span>{c.icon} {c.name}</span>
+                  <div style={{textAlign:"right"}}>
+                    <span style={{fontWeight:700}}>{formatARS(c.total)}</span>
+                    {ps&&<span style={{fontSize:11,color:"var(--muted)",marginLeft:6}}>{ps}%</span>}
+                  </div>
+                </div>
+                <div className="barra-track" style={{marginTop:7}}>
+                  <div className="barra-fill" style={{width:`${pct.toFixed(0)}%`,background:c.color}}/>
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      )}
+      {gastos.length===0 && <Vacio icon="📊" titulo="Sin datos" sub="Agregá gastos para ver el análisis"/>}
+    </>
+  );
+}
+
+// ─── Componentes compartidos ──────────────────────────────────────────────────
+function NavPeriod({ label, esActual, onPrev, onNext }) {
+  return (
+    <div className="nav-mes">
+      <button className="flecha-btn" onClick={onPrev}>‹</button>
+      <span className="mes-nombre">{label}</span>
+      <button className="flecha-btn" onClick={onNext} style={{opacity:esActual?0.3:1}}>›</button>
+    </div>
+  );
+}
+
+function SummaryCard({ total, count, labelCount }) {
+  return (
+    <div className="hero-card">
+      <div className="hero-label">Total del período</div>
+      <div className="hero-amount">{formatARS(total)}</div>
+      <div className="hero-sub">{count} {labelCount}{count!==1?"s":""}</div>
+    </div>
+  );
+}
+
+function FilaGasto({ gasto:e, onClick, conSigno=true }) {
+  const cat   = getCat(e.category);
+  const medio = getMedio(e.card);
+  return (
+    <div className="fila-gasto" onClick={onClick}>
+      <div className="fila-icon" style={{background:cat.color+"1a"}}>{cat.icon}</div>
+      <div className="fila-info">
+        <div className="fila-nombre">{e.description || cat.name}</div>
+        <div className="fila-meta">
+          <span className="fila-medio" style={{color:medio.color}}>{medio.icon} {medio.name}</span>
+          {e.is_fixed && <span className="chip-fijo">FIJO</span>}
+        </div>
+      </div>
+      <div className="fila-monto" style={{color:cat.color}}>{conSigno?"-":""}{formatARS(e.amount)}</div>
+    </div>
+  );
+}
+
+function Vacio({ icon, titulo, sub }) {
+  return (
+    <div className="vacio">
+      <div className="vacio-icon">{icon}</div>
+      <div className="vacio-titulo">{titulo}</div>
+      <div className="vacio-sub">{sub}</div>
+    </div>
+  );
+}
+
+function Splash() {
+  return (
+    <div className="splash">
+      <div style={{fontSize:52}}>💸</div>
+      <div style={{fontSize:22,fontWeight:700,letterSpacing:"-.5px"}}>Mis Gastos</div>
+      <div style={{fontSize:13,color:"#6b7aa0",marginTop:4}}>Cargando…</div>
+    </div>
+  );
+}
+
+// ─── Modales ──────────────────────────────────────────────────────────────────
+function GastoModal({ gasto, saving, onGuardar, onEliminar, onCerrar }) {
+  const [form, setForm] = useState({
+    description: gasto?.description || "",
+    amount:      gasto?.amount ? String(gasto.amount) : "",
+    category:    gasto?.category || CATS[0].id,
+    card:        gasto?.card     || MEDIOS[0].id,
+    date:        gasto?.date     || todayStr(),
+  });
+  const set     = (k,v) => setForm(f=>({...f,[k]:v}));
+  const numStr  = form.amount.replace(/\D/g,"");
+  const display = numStr ? new Intl.NumberFormat("es-AR").format(Number(numStr)) : "";
+
+  return (
+    <Modal titulo={gasto?"Editar gasto":"Nuevo gasto"} onCerrar={onCerrar}>
+      <Campo label="Monto">
+        <input className="input-monto" type="text" inputMode="numeric" placeholder="$ 0"
+          value={display?`$ ${display}`:""}
+          onChange={e=>set("amount",e.target.value.replace(/\D/g,""))}/>
+      </Campo>
+      <Campo label="Descripción">
+        <input type="text" placeholder="Ej: Almuerzo, nafta…"
+          value={form.description} onChange={e=>set("description",e.target.value)}/>
+      </Campo>
+
+      <Campo label="Categoría"><PickerCategoria value={form.category} onChange={v=>set("category",v)}/></Campo>
+      <Campo label="Medio de pago"><PickerMedio value={form.card} onChange={v=>set("card",v)}/></Campo>
+      <Campo label="Fecha">
+        <input type="date" value={form.date} onChange={e=>set("date",e.target.value)}/>
+      </Campo>
+      <button className="btn-primario" disabled={!numStr||saving} onClick={()=>onGuardar({...form,amount:numStr})}>
+        {saving?"Guardando…":gasto?"Guardar cambios":"Agregar gasto"}
+      </button>
+      {onEliminar && <button className="btn-peligro" onClick={onEliminar} disabled={saving}>Eliminar gasto</button>}
+    </Modal>
+  );
+}
+
+function FijoModal({ fijo, saving, onGuardar, onEliminar, onCerrar }) {
+  const [form, setForm] = useState({
+    description: fijo?.description || "",
+    amount:      fijo?.amount ? String(fijo.amount) : "",
+    category:    fijo?.category || CATS[0].id,
+    card:        fijo?.card     || MEDIOS[0].id,
+  });
+  const set     = (k,v) => setForm(f=>({...f,[k]:v}));
+  const numStr  = form.amount.replace(/\D/g,"");
+  const display = numStr ? new Intl.NumberFormat("es-AR").format(Number(numStr)) : "";
+
+  return (
+    <Modal titulo={fijo?"Editar gasto fijo":"Nuevo gasto fijo"} onCerrar={onCerrar}>
+      <Campo label="Monto">
+        <input className="input-monto" type="text" inputMode="numeric" placeholder="$ 0"
+          value={display?`$ ${display}`:""}
+          onChange={e=>set("amount",e.target.value.replace(/\D/g,""))}/>
+      </Campo>
+      <Campo label="Descripción">
+        <input type="text" placeholder="Ej: Expensas, Netflix, Gym…"
+          value={form.description} onChange={e=>set("description",e.target.value)}/>
+      </Campo>
+      <Campo label="Categoría"><PickerCategoria value={form.category} onChange={v=>set("category",v)}/></Campo>
+      <Campo label="Medio de pago"><PickerMedio value={form.card} onChange={v=>set("card",v)}/></Campo>
+      <button className="btn-primario" disabled={!numStr||saving} onClick={()=>onGuardar({...form,amount:numStr})}>
+        {saving?"Guardando…":fijo?"Guardar cambios":"Agregar gasto fijo"}
+      </button>
+      {onEliminar && <button className="btn-peligro" onClick={onEliminar} disabled={saving}>Eliminar</button>}
+    </Modal>
+  );
+}
+
+function SettingsModal({ settings, onGuardar, onCerrar }) {
+  const [sueldo,   setSueldo]   = useState(settings.sueldo   || "");
+  const [diaClose, setDiaClose] = useState(settings.diaClose || "");
+  function guardar() { onGuardar({sueldo:Number(sueldo)||0, diaClose:Number(diaClose)||null}); onCerrar(); }
+  return (
+    <Modal titulo="Configuración" onCerrar={onCerrar}>
+      <Campo label="Mi sueldo mensual">
+        <input type="number" inputMode="numeric" placeholder="Ej: 500000"
+          value={sueldo} onChange={e=>setSueldo(e.target.value)}/>
+      </Campo>
+      <Campo label="Día de cierre de tarjeta">
+        <input type="number" inputMode="numeric" placeholder="Ej: 15  (vacío si no aplica)"
+          min="1" max="31" value={diaClose} onChange={e=>setDiaClose(e.target.value)}/>
+        <div style={{fontSize:11,color:"var(--muted)",marginTop:6,lineHeight:1.6}}>
+          Permite ver los gastos por período de tarjeta en lugar de mes calendario.
+        </div>
+      </Campo>
+      <button className="btn-primario" onClick={guardar}>Guardar</button>
+    </Modal>
+  );
+}
+
+function Modal({ titulo, onCerrar, children }) {
+  return (
+    <div className="overlay" onClick={onCerrar}>
+      <div className="sheet" onClick={e=>e.stopPropagation()}>
+        <div className="sheet-handle"/>
+        <div className="sheet-header">
+          <span className="sheet-titulo">{titulo}</span>
+          <button className="sheet-cerrar" onClick={onCerrar}>✕</button>
+        </div>
+        {children}
+      </div>
+    </div>
+  );
+}
+function Campo({ label, children }) {
+  return <div className="campo"><label className="campo-label">{label}</label>{children}</div>;
+}
+function PickerCategoria({ value, onChange }) {
+  return (
+    <div className="cat-grid">
+      {CATS.map(c=>(
+        <button key={c.id} className={`cat-btn${value===c.id?" sel":""}`}
+          style={value===c.id?{"--cc":c.color}:{}}
+          onClick={()=>onChange(c.id)}>
+          <span style={{fontSize:24}}>{c.icon}</span>
+          <span className="cat-btn-label">{c.name}</span>
+        </button>
+      ))}
+    </div>
+  );
+}
+function PickerMedio({ value, onChange }) {
+  return (
+    <div className="medio-picker">
+      {MEDIOS.map(m=>(
+        <button key={m.id} className={`medio-opt${value===m.id?" sel":""}`}
+          style={value===m.id?{background:m.color,borderColor:m.color,color:"#fff"}:{}}
+          onClick={()=>onChange(m.id)}>
+          <span>{m.icon}</span><span>{m.name}</span>
+        </button>
+      ))}
+    </div>
+  );
+}
+
+// ─── CSS ──────────────────────────────────────────────────────────────────────
+const CSS = `
+  *, *::before, *::after { box-sizing:border-box; margin:0; padding:0; }
+  * { -webkit-tap-highlight-color:transparent; }
+  :root {
+    --bg:#070b12; --card:#0e1522; --card2:#141e30;
+    --border:rgba(59,130,246,.14); --accent:#3b82f6; --accent2:#93c5fd;
+    --grad:linear-gradient(135deg,#3b82f6,#6366f1);
+    --text:#eef2ff; --muted:#5d6e92; --danger:#f43f5e;
+    --success:#34d399; --warn:#fbbf24;
+    --r:20px; --r-sm:14px; --r-xs:10px;
+    --drawer-w:285px;
+  }
+  html,body { height:100dvh; overflow:hidden; overscroll-behavior:none; background:var(--bg); }
+  body { color:var(--text); font-family:-apple-system,BlinkMacSystemFont,'SF Pro Display','Segoe UI',sans-serif; font-size:15px; line-height:1.5; }
+  button { cursor:pointer; border:none; background:none; color:inherit; font:inherit; }
+  input,textarea { font:inherit; color:inherit; background:none; border:none; outline:none; }
+
+  /* ── Layout ── */
+  .app { display:flex; flex-direction:row; height:100dvh; width:100%; }
+  .main-col { flex:1; min-width:0; display:flex; flex-direction:column; height:100dvh; }
+
+  /* ── Top bar ── */
+  .topbar { flex-shrink:0; display:flex; align-items:center; justify-content:space-between; padding:14px 20px 10px; gap:8px; transition:background .3s; position:relative; z-index:10; }
+  .topbar-home { background:transparent; }
+  .brand { display:flex; align-items:center; gap:8px; flex:1; justify-content:center; }
+  .logo  { width:32px; height:32px; border-radius:10px; background:var(--grad); display:flex; align-items:center; justify-content:center; font-size:17px; flex-shrink:0; }
+  .app-name { font-size:18px; font-weight:700; letter-spacing:-.4px; }
+  .saving-txt { font-size:11px; color:var(--muted); }
+  .icon-btn { width:36px; height:36px; border-radius:50%; background:rgba(255,255,255,.07); border:1px solid var(--border); display:flex; align-items:center; justify-content:center; font-size:16px; flex-shrink:0; }
+  .icon-btn:active { opacity:.6; }
+
+  /* ── Hamburger — solo en mobile ── */
+  .ham-btn { width:36px; height:36px; border-radius:50%; background:rgba(255,255,255,.07); border:1px solid var(--border); display:flex; flex-direction:column; align-items:center; justify-content:center; gap:4.5px; flex-shrink:0; }
+  .ham-btn span { display:block; width:16px; height:2px; background:var(--text); border-radius:99px; }
+  .ham-btn:active { opacity:.6; }
+
+  /* ── Drawer / Sidebar ── */
+  .drawer-overlay { position:fixed; inset:0; background:rgba(0,0,0,0); pointer-events:none; transition:background .3s; z-index:200; }
+  .drawer-overlay.open { background:rgba(0,0,0,.7); pointer-events:auto; backdrop-filter:blur(6px); }
+  /* Mobile: drawer deslizable */
+  .drawer { position:fixed; top:0; left:0; bottom:0; width:var(--drawer-w); background:#09101d; border-right:1px solid rgba(59,130,246,.12); z-index:210; transform:translateX(-100%); transition:transform .3s cubic-bezier(.4,0,.2,1); display:flex; flex-direction:column; }
+  .drawer.open { transform:translateX(0); }
+  .drawer-header { display:flex; align-items:center; gap:14px; padding:56px 22px 24px; background:linear-gradient(160deg,rgba(59,130,246,.13),rgba(99,102,241,.06)); border-bottom:1px solid rgba(59,130,246,.1); }
+  .drawer-logo-wrap { width:50px; height:50px; border-radius:16px; background:var(--grad); display:flex; align-items:center; justify-content:center; font-size:26px; flex-shrink:0; box-shadow:0 6px 24px rgba(59,130,246,.3); }
+  .drawer-app-name { font-size:18px; font-weight:700; letter-spacing:-.3px; }
+  .drawer-tagline  { font-size:12px; color:var(--muted); margin-top:1px; }
+  .drawer-nav { flex:1; padding:14px 10px; display:flex; flex-direction:column; gap:2px; overflow-y:auto; }
+  .drawer-item { display:flex; align-items:center; gap:13px; padding:13px 14px; border-radius:13px; font-size:14.5px; font-weight:500; color:var(--muted); position:relative; text-align:left; transition:all .15s; }
+  .drawer-item:active { opacity:.7; }
+  .drawer-item.active { color:var(--text); background:rgba(59,130,246,.11); font-weight:600; }
+  .drawer-icon { font-size:20px; width:26px; text-align:center; flex-shrink:0; }
+  .drawer-pip { position:absolute; right:12px; width:6px; height:6px; border-radius:50%; background:var(--accent); }
+  .drawer-footer { padding:14px 10px calc(env(safe-area-inset-bottom,0px)+14px); border-top:1px solid rgba(59,130,246,.08); }
+  .drawer-cfg { display:flex; align-items:center; gap:10px; padding:12px 14px; border-radius:13px; font-size:14px; color:var(--muted); width:100%; }
+  .drawer-cfg:active { background:var(--card2); }
+
+  /* Desktop: sidebar fijo siempre visible */
+  @media (min-width:768px) {
+    .drawer { position:relative; transform:none !important; width:260px; flex-shrink:0; height:100dvh; z-index:auto; }
+    .drawer-header { padding-top:32px; }
+    .drawer-overlay { display:none !important; }
+    .ham-btn { display:none; }
+    .brand { justify-content:flex-start; }
+  }
+
+  /* ── Content ── */
+  .content { flex:1; min-height:0; overflow-y:auto; -webkit-overflow-scrolling:touch; overscroll-behavior:contain; padding:0 24px calc(40px + env(safe-area-inset-bottom,0px)); }
+  @media (min-width:768px) {
+    .content { padding:0 40px 48px; max-width:860px; }
+  }
+
+  /* ── Home ── */
+  .home-hero { margin:0 -16px 0; padding:0 24px 28px; background:linear-gradient(175deg,#111827 0%,#0f1c3d 40%,#070b12 100%); position:relative; overflow:hidden; }
+  .home-hero-glow { position:absolute; top:-60px; left:50%; transform:translateX(-50%); width:320px; height:320px; border-radius:50%; background:radial-gradient(circle,rgba(99,102,241,.22) 0%,transparent 70%); pointer-events:none; }
+  .home-icono-saludo { font-size:36px; margin-top:12px; }
+  .home-saludo { font-size:28px; font-weight:800; letter-spacing:-.8px; margin-top:8px; color:#fff; }
+  .home-subtitulo { font-size:14px; color:rgba(255,255,255,.45); margin-top:3px; margin-bottom:24px; }
+  .home-mes-card { background:rgba(255,255,255,.05); border:1px solid rgba(255,255,255,.1); border-radius:18px; padding:18px 20px; backdrop-filter:blur(10px); }
+  .home-mes-label { font-size:11px; font-weight:600; color:rgba(255,255,255,.45); text-transform:uppercase; letter-spacing:.7px; margin-bottom:4px; text-transform:capitalize; }
+  .home-mes-total { font-size:38px; font-weight:800; letter-spacing:-1.5px; color:#fff; line-height:1.1; }
+  .home-mes-ahorro { font-size:13px; font-weight:600; margin-top:6px; }
+  .ahorro-pos { color:#34d399; }
+  .ahorro-neg { color:#f43f5e; }
+  .home-barra-wrap { margin-top:14px; }
+  .home-barra-track { height:5px; background:rgba(255,255,255,.12); border-radius:99px; overflow:hidden; margin-bottom:7px; }
+  .home-barra-fill  { height:100%; border-radius:99px; transition:width .6s; }
+  .home-barra-pct   { font-size:11px; color:rgba(255,255,255,.4); }
+
+  .home-section-title { font-size:12px; font-weight:700; color:var(--muted); text-transform:uppercase; letter-spacing:.6px; margin:20px 0 10px; }
+  .home-section-row   { display:flex; justify-content:space-between; align-items:center; margin:16px 0 8px; }
+  .home-ver-mas { font-size:13px; color:var(--accent2); font-weight:600; }
+
+  /* Shortcuts */
+  .shortcuts-grid { display:grid; grid-template-columns:repeat(4,1fr); gap:8px; margin-bottom:6px; }
+  .shortcut { display:flex; flex-direction:column; align-items:center; gap:8px; padding:16px 4px 14px; border-radius:16px; background:var(--card); border:1px solid var(--border); transition:background .15s; }
+  .shortcut:active { background:var(--card2); }
+  .shortcut-icon-wrap { width:44px; height:44px; border-radius:14px; background:color-mix(in srgb,var(--sc) 15%,transparent); border:1px solid color-mix(in srgb,var(--sc) 25%,transparent); display:flex; align-items:center; justify-content:center; font-size:22px; }
+  .shortcut-label { font-size:11px; font-weight:600; color:var(--muted); text-align:center; }
+
+  /* Stats */
+  .home-stats { display:flex; align-items:center; background:var(--card); border:1px solid var(--border); border-radius:var(--r-sm); padding:14px 16px; margin:14px 0 20px; }
+  .home-stat  { flex:1; text-align:center; }
+  .home-stat-val { display:block; font-size:16px; font-weight:800; letter-spacing:-.5px; }
+  .home-stat-label { display:block; font-size:10px; color:var(--muted); margin-top:2px; }
+  .home-stat-div { width:1px; height:30px; background:var(--border); }
+
+  /* Tip */
+  .tip-card { display:flex; align-items:flex-start; gap:10px; background:rgba(99,102,241,.07); border:1px solid rgba(99,102,241,.15); border-radius:var(--r-sm); padding:14px 16px; margin:8px 0 24px; }
+  .tip-icon { font-size:18px; flex-shrink:0; margin-top:1px; }
+  .tip-text { font-size:13px; color:var(--muted); line-height:1.6; }
+
+  /* ── Nav período ── */
+  .nav-mes    { display:flex; align-items:center; justify-content:space-between; padding:12px 0 14px; }
+  .flecha-btn { width:38px; height:38px; border-radius:50%; background:var(--card); border:1px solid var(--border); display:flex; align-items:center; justify-content:center; font-size:20px; }
+  .flecha-btn:active { opacity:.6; }
+  .mes-nombre { font-size:16px; font-weight:700; letter-spacing:-.4px; text-transform:capitalize; text-align:center; }
+
+  /* ── Toggle vista ── */
+  .vista-toggle { display:flex; background:var(--card); border:1px solid var(--border); border-radius:99px; padding:3px; gap:2px; margin:12px 0 4px; }
+  .vista-btn { flex:1; padding:8px; border-radius:99px; font-size:12px; font-weight:600; color:var(--muted); transition:all .2s; }
+  .vista-btn.active { background:var(--grad); color:#fff; }
+  .vista-btn:disabled { opacity:.4; cursor:default; }
+
+  /* ── Hero card ── */
+  .hero-card  { background:linear-gradient(135deg,rgba(59,130,246,.09),rgba(99,102,241,.09)); border:1px solid rgba(59,130,246,.2); border-radius:var(--r); padding:22px; margin-bottom:16px; }
+  .hero-label { font-size:11px; font-weight:700; color:var(--accent2); text-transform:uppercase; letter-spacing:.7px; margin-bottom:7px; }
+  .hero-amount{ font-size:38px; font-weight:800; letter-spacing:-1.5px; background:var(--grad); -webkit-background-clip:text; -webkit-text-fill-color:transparent; background-clip:text; line-height:1; }
+  .hero-sub   { font-size:12px; color:var(--muted); margin-top:7px; }
+
+  /* ── Lista gastos ── */
+  .fecha-label { font-size:12px; font-weight:700; color:var(--muted); text-transform:capitalize; padding:14px 2px 7px; }
+  .lista-card  { background:var(--card); border:1px solid var(--border); border-radius:var(--r-sm); overflow:hidden; margin-bottom:8px; }
+  .fila-gasto  { display:flex; align-items:center; gap:13px; padding:14px 16px; border-bottom:1px solid rgba(59,130,246,.06); cursor:pointer; transition:background .12s; }
+  .fila-gasto:last-child { border-bottom:none; }
+  .fila-gasto:active { background:var(--card2); }
+  .fila-icon   { width:44px; height:44px; border-radius:14px; display:flex; align-items:center; justify-content:center; font-size:21px; flex-shrink:0; }
+  .fila-info   { flex:1; min-width:0; }
+  .fila-nombre { font-weight:500; font-size:14px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; margin-bottom:1px; }
+  .fila-meta   { font-size:11.5px; display:flex; gap:6px; align-items:center; }
+  .fila-medio  { font-weight:600; }
+  .fila-monto  { font-weight:700; font-size:15px; flex-shrink:0; letter-spacing:-.3px; }
+  .chip-fijo   { font-size:9px; padding:2px 6px; border-radius:99px; font-weight:700; background:rgba(59,130,246,.18); color:var(--accent2); }
+
+  /* ── FAB ── */
+  .fab { position:fixed; bottom:calc(24px + env(safe-area-inset-bottom,0px)); right:20px; width:58px; height:58px; border-radius:50%; background:var(--grad); font-size:28px; color:#fff; box-shadow:0 6px 28px rgba(59,130,246,.5); z-index:9; display:flex; align-items:center; justify-content:center; }
+  @media (min-width:481px) { .fab { right:calc(50% - 224px); } }
+  .fab:active { transform:scale(.9); }
+
+  /* ── Fijos ── */
+  .page-title { font-size:24px; font-weight:800; letter-spacing:-.6px; padding:12px 0 10px; }
+  .info-box { background:rgba(59,130,246,.06); border:1px solid rgba(59,130,246,.12); border-radius:var(--r-xs); padding:12px 16px; font-size:13px; color:var(--muted); line-height:1.6; margin-bottom:14px; }
+  .btn-outline-add { width:100%; padding:15px; border-radius:var(--r-sm); font-weight:700; font-size:15px; background:var(--grad); color:#fff; margin-top:12px; display:block; }
+  .btn-outline-add:active { opacity:.85; }
+
+  /* ── Medios ── */
+  .medio-card { background:var(--card); border:1px solid var(--border); border-radius:var(--r); padding:20px; margin-bottom:10px; }
+  .medio-top  { display:flex; justify-content:space-between; align-items:center; margin-bottom:6px; }
+  .medio-nombre-row { display:flex; align-items:center; gap:8px; }
+  .medio-icono { font-size:20px; }
+  .medio-nombre{ font-size:17px; font-weight:700; }
+  .medio-cant  { font-size:12px; color:var(--muted); }
+  .medio-total { font-size:32px; font-weight:800; letter-spacing:-1px; margin:8px 0 12px; }
+  .barra-track { height:4px; background:var(--card2); border-radius:99px; overflow:hidden; }
+  .barra-fill  { height:100%; border-radius:99px; transition:width .5s; }
+  .medio-lista { border-top:1px solid var(--border); padding-top:12px; margin-top:12px; display:flex; flex-direction:column; gap:9px; }
+  .medio-fila  { display:flex; justify-content:space-between; font-size:13px; color:var(--muted); }
+  .medio-mas   { font-size:12px; color:var(--muted); text-align:center; padding-top:4px; }
+
+  /* ── Análisis ── */
+  .stats-row { display:flex; gap:8px; margin-bottom:12px; }
+  .stat-card  { flex:1; background:var(--card); border:1px solid var(--border); border-radius:var(--r-sm); padding:14px 10px; text-align:center; }
+  .stat-label { font-size:10px; font-weight:600; color:var(--muted); text-transform:uppercase; letter-spacing:.5px; margin-bottom:6px; }
+  .stat-val   { font-size:22px; font-weight:800; letter-spacing:-1px; }
+  .analysis-card { background:var(--card); border:1px solid var(--border); border-radius:var(--r-sm); padding:18px; margin-bottom:12px; }
+  .card-titulo{ font-size:11px; font-weight:700; color:var(--muted); text-transform:uppercase; letter-spacing:.6px; margin-bottom:14px; }
+  .sugerencia { font-size:13px; line-height:1.7; padding:10px 0; border-bottom:1px solid rgba(59,130,246,.07); }
+  .sugerencia:last-child { border-bottom:none; padding-bottom:0; }
+  .cat-row    { padding:11px 0; border-bottom:1px solid rgba(59,130,246,.06); }
+  .cat-row:last-child { border-bottom:none; }
+  .cat-row-top { display:flex; justify-content:space-between; align-items:center; font-size:14px; }
+
+  /* ── Vacío ── */
+  .vacio { text-align:center; padding:56px 20px; color:var(--muted); }
+  .vacio-icon { font-size:52px; margin-bottom:14px; opacity:.55; }
+  .vacio-titulo { font-size:17px; font-weight:600; color:var(--text); margin-bottom:6px; }
+  .vacio-sub { font-size:13px; }
+
+  /* ── Splash ── */
+  .splash { display:flex; flex-direction:column; align-items:center; justify-content:center; height:100dvh; background:var(--bg); gap:12px; }
+
+  /* ── Overlay / Sheet ── */
+  .overlay { position:fixed; inset:0; background:rgba(0,0,0,.8); z-index:300; display:flex; align-items:flex-end; justify-content:center; backdrop-filter:blur(8px); }
+  .sheet { background:#0e1522; border-radius:26px 26px 0 0; border-top:1px solid var(--border); width:100%; max-width:480px; padding:0 20px calc(28px + env(safe-area-inset-bottom,0px)); max-height:92dvh; overflow-y:auto; }
+  .sheet-handle { width:36px; height:4px; background:rgba(255,255,255,.12); border-radius:99px; margin:14px auto 20px; }
+  .sheet-header { display:flex; justify-content:space-between; align-items:center; margin-bottom:22px; }
+  .sheet-titulo { font-size:20px; font-weight:700; letter-spacing:-.4px; }
+  .sheet-cerrar { width:30px; height:30px; border-radius:50%; background:var(--card2); display:flex; align-items:center; justify-content:center; font-size:13px; color:var(--muted); }
+
+  /* ── Campos ── */
+  .campo { margin-bottom:18px; }
+  .campo-label { display:block; font-size:11px; font-weight:700; color:var(--muted); text-transform:uppercase; letter-spacing:.6px; margin-bottom:8px; }
+  .campo input,.campo textarea { width:100%; background:var(--card2); border:1.5px solid rgba(59,130,246,.12); border-radius:var(--r-sm); padding:13px 15px; font-size:15px; color:var(--text); transition:border-color .15s; }
+  .campo input:focus,.campo textarea:focus { border-color:var(--accent); }
+  .input-monto { font-size:30px !important; font-weight:800 !important; letter-spacing:-1px !important; }
+
+  /* ── Botones ── */
+  .btn-primario { width:100%; padding:16px; border-radius:var(--r-sm); font-weight:700; font-size:15px; background:var(--grad); color:#fff; margin-top:4px; letter-spacing:-.2px; }
+  .btn-primario:active { opacity:.85; }
+  .btn-primario:disabled { opacity:.35; cursor:default; }
+  .btn-peligro  { width:100%; padding:14px; border-radius:var(--r-sm); font-weight:700; font-size:14px; background:rgba(244,63,94,.08); color:var(--danger); border:1.5px solid rgba(244,63,94,.18); margin-top:10px; }
+  .btn-peligro:active { opacity:.7; }
+
+  /* ── Picker categoría ── */
+  .cat-grid { display:grid; grid-template-columns:repeat(5,1fr); gap:7px; }
+  .cat-btn  { display:flex; flex-direction:column; align-items:center; gap:5px; padding:10px 2px 9px; border-radius:13px; border:1.5px solid transparent; background:var(--card2); transition:all .15s; }
+  .cat-btn.sel { background:color-mix(in srgb,var(--cc) 14%,transparent); border-color:color-mix(in srgb,var(--cc) 40%,transparent); }
+  .cat-btn:active { opacity:.7; }
+  .cat-btn-label { font-size:9px; font-weight:600; color:var(--muted); text-align:center; line-height:1.2; }
+  .cat-btn.sel .cat-btn-label { color:var(--cc); }
+
+  /* ── Picker medio ── */
+  .medio-picker { display:flex; gap:8px; }
+  .medio-opt { flex:1; display:flex; flex-direction:column; align-items:center; gap:5px; padding:12px 4px; border-radius:13px; font-size:12px; font-weight:600; border:1.5px solid var(--border); background:var(--card2); color:var(--muted); transition:all .15s; }
+  .medio-opt span:first-child { font-size:20px; }
+  .medio-opt:active { opacity:.7; }
+`;
