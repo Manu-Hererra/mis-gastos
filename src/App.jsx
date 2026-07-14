@@ -410,30 +410,41 @@ export default function App() {
   }
 
   // ─── Inversiones ─────────────────────────────────────────────────────────────
-  function fetchConTimeout(url, ms=10000) {
+  function fetchConTimeout(url, ms=8000) {
     return Promise.race([
       fetch(url),
       new Promise((_,r)=>setTimeout(()=>r(new Error("timeout")),ms)),
     ]);
   }
 
-  async function fetchPrecioYahoo(ticker) {
-    const yahooUrl = `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(ticker)}?interval=1d&range=1d`;
+  async function fetchCotizacionesYahoo(symbols) {
+    // v7 acepta múltiples símbolos en un solo request
+    const q = symbols.map(encodeURIComponent).join("%2C");
+    const yahooUrl = `https://query1.finance.yahoo.com/v7/finance/quote?symbols=${q}&fields=regularMarketPrice,currency`;
+    const yahoo2Url = `https://query2.finance.yahoo.com/v7/finance/quote?symbols=${q}&fields=regularMarketPrice,currency`;
     const proxies = [
       `https://corsproxy.io/?${encodeURIComponent(yahooUrl)}`,
       `https://api.allorigins.win/raw?url=${encodeURIComponent(yahooUrl)}`,
+      `https://corsproxy.io/?${encodeURIComponent(yahoo2Url)}`,
+      `https://api.allorigins.win/raw?url=${encodeURIComponent(yahoo2Url)}`,
     ];
     for (const url of proxies) {
       try {
         const r = await fetchConTimeout(url);
         if (!r.ok) continue;
         const d = await r.json();
-        const result = d?.chart?.result?.[0];
-        if (!result?.meta?.regularMarketPrice) continue;
-        return { precio: result.meta.regularMarketPrice, moneda: result.meta.currency || "USD" };
+        const quotes = d?.quoteResponse?.result;
+        if (!quotes?.length) continue;
+        const result = {};
+        for (const q of quotes) {
+          if (q.regularMarketPrice) {
+            result[q.symbol] = { precio: q.regularMarketPrice, moneda: q.currency || "USD" };
+          }
+        }
+        if (Object.keys(result).length > 0) return result;
       } catch {}
     }
-    return null;
+    return {};
   }
 
   async function actualizarCotizaciones() {
@@ -441,12 +452,14 @@ export default function App() {
     try {
       const EFECTIVO_TICKERS = ["EFECTIVO_ARS","EFECTIVO_USD"];
       const activos = [...new Set(inversiones.map(i=>i.activo))].filter(a=>!EFECTIVO_TICKERS.includes(a));
+      if (activos.length === 0) { setLoadingCot(false); return; }
+
+      const resultados = await fetchCotizacionesYahoo(activos);
       const rows = [];
       const fallidos = [];
       for (const activo of activos) {
-        const res = await fetchPrecioYahoo(activo);
+        const res = resultados[activo];
         if (res) {
-          // Usar activo como id para que el upsert siempre actualice la fila existente
           rows.push({ id: activo, activo, precio_actual: res.precio, moneda: res.moneda, updated_at: new Date().toISOString() });
         } else {
           fallidos.push(activo);
@@ -454,7 +467,7 @@ export default function App() {
       }
       if (rows.length > 0) await dbUpsert("cotizaciones_cache", rows);
       await recargar();
-      if (fallidos.length > 0) alert(`No se pudo obtener precio para: ${fallidos.join(", ")}\n\nVerificá que el ticker sea correcto.`);
+      if (fallidos.length > 0) alert(`No se pudo obtener precio para: ${fallidos.join(", ")}\n\nVerificá que el ticker sea correcto en Yahoo Finance.`);
     } catch(e) { alert("Error al actualizar cotizaciones: " + e.message); }
     setLoadingCot(false);
   }
