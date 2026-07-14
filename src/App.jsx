@@ -467,6 +467,18 @@ export default function App() {
     setLoadingCot(false);
   }
 
+  async function guardarPrecioManual(activo, precio, moneda) {
+    try {
+      await dbUpsert("cotizaciones_cache", [{
+        id: activo, activo,
+        precio_actual: Number(precio),
+        moneda: moneda || (activo.toUpperCase().endsWith(".BA") ? "ARS" : "USD"),
+        updated_at: new Date().toISOString(),
+      }]);
+      await recargar();
+    } catch(e) { alert("Error: " + e.message); }
+  }
+
   async function guardarInversion(data) {
     setSaving(true);
     try {
@@ -585,7 +597,7 @@ export default function App() {
             {tab==="medios"      && <MediosTab gastos={gastosPeriodo} total={totalPeriodo} label={labelPeriod} esActual={esActual} onPrev={irPrev} onNext={irNext}/>}
             {tab==="analisis"    && <AnalisisTab gastos={gastosPeriodo} todosGastos={gastos} total={totalPeriodo} label={labelPeriod} sueldo={sueldo} esActual={esActual} onPrev={irPrev} onNext={irNext} onEditarSueldo={()=>abrirModal("settings")} dolar={dolar} diaClose={diaClose} period={period} vista={vista}/>}
             {tab==="metas"       && <MetasTab metas={metas} contribuciones={contribuciones} saving={saving} inversiones={inversiones} cotizaciones={cotizaciones} dolar={dolar} onNuevaMeta={()=>abrirModal("meta")} onEditarMeta={m=>abrirModal("meta",m)} onEliminarMeta={id=>eliminarMeta(id)} onAgregarAporte={m=>abrirModal("contribucion",m)} onEliminarAporte={id=>eliminarContribucion(id)}/>}
-            {tab==="inversiones" && <InversionesTab inversiones={inversiones} cotizaciones={cotizaciones} dolar={dolar} loadingCot={loadingCot} onActualizar={actualizarCotizaciones} onAgregar={()=>abrirModal("inversion")} onEditar={i=>abrirModal("inversion",i)}/>}
+            {tab==="inversiones" && <InversionesTab inversiones={inversiones} cotizaciones={cotizaciones} dolar={dolar} loadingCot={loadingCot} onActualizar={actualizarCotizaciones} onGuardarPrecio={guardarPrecioManual} onAgregar={()=>abrirModal("inversion")} onEditar={i=>abrirModal("inversion",i)}/>}
           </div>
         </div>
       </div>
@@ -1791,7 +1803,9 @@ function PickerMedio({ value, onChange }) {
 // ─── Inversiones ─────────────────────────────────────────────────────────────
 const EFECTIVO_TICKERS = ["EFECTIVO_ARS","EFECTIVO_USD"];
 
-function InversionesTab({ inversiones, cotizaciones, dolar, loadingCot, onActualizar, onAgregar, onEditar }) {
+function InversionesTab({ inversiones, cotizaciones, dolar, loadingCot, onActualizar, onGuardarPrecio, onAgregar, onEditar }) {
+  const [editandoPrecio, setEditandoPrecio] = React.useState(null); // activo ticker
+  const [precioInput, setPrecioInput] = React.useState("");
   const esARS    = (activo) => activo.toUpperCase().endsWith(".BA");
   const cotMap   = Object.fromEntries(cotizaciones.map(c=>[c.activo,c]));
   const aARS     = (precio, moneda) => moneda==="USD" ? precio*(dolar?.mep||0) : precio;
@@ -1921,20 +1935,39 @@ function InversionesTab({ inversiones, cotizaciones, dolar, loadingCot, onActual
                     {signo}{p.precioPromedio.toLocaleString("es-AR",{maximumFractionDigits:2})}
                   </div>
                 </div>
-                <div style={{flex:1,background:"var(--card2)",borderRadius:"var(--radius)",padding:"8px 12px"}}>
-                  <div style={{fontSize:10,color:"var(--muted)",marginBottom:2}}>Precio actual</div>
-                  {p.cot?.precio_actual
-                    ? <>
-                        <div style={{fontSize:14,fontWeight:700}}>
-                          {p.cot.moneda==="USD"?"USD ":""}{Number(p.cot.precio_actual).toLocaleString("es-AR",{maximumFractionDigits:2})}
-                        </div>
-                        {p.cot.moneda==="USD" && dolar?.mep && (
-                          <div style={{fontSize:10,color:"var(--muted)"}}>
-                            ≈ {formatARS(p.cot.precio_actual*dolar.mep)}
-                          </div>
-                        )}
+                <div style={{flex:1,background:"var(--card2)",borderRadius:"var(--radius)",padding:"8px 12px",cursor:"pointer"}}
+                  onClick={()=>{ setEditandoPrecio(p.activo); setPrecioInput(p.cot?.precio_actual ? String(p.cot.precio_actual) : ""); }}>
+                  <div style={{fontSize:10,color:"var(--muted)",marginBottom:2}}>Precio actual ✏️</div>
+                  {editandoPrecio===p.activo
+                    ? <div style={{display:"flex",gap:4}} onClick={e=>e.stopPropagation()}>
+                        <input type="number" inputMode="decimal" autoFocus
+                          style={{flex:1,background:"var(--card)",border:"1px solid var(--accent)",borderRadius:6,padding:"2px 6px",color:"var(--text)",fontSize:14,width:0}}
+                          value={precioInput} onChange={e=>setPrecioInput(e.target.value)}
+                          onKeyDown={e=>{
+                            if(e.key==="Enter" && precioInput){
+                              onGuardarPrecio(p.activo, precioInput, p.moneda==="ARS"?"ARS":"USD");
+                              setEditandoPrecio(null);
+                            }
+                            if(e.key==="Escape") setEditandoPrecio(null);
+                          }}/>
+                        <button style={{background:"var(--accent)",color:"#fff",border:"none",borderRadius:6,padding:"2px 8px",fontSize:13,cursor:"pointer"}}
+                          onClick={()=>{ if(precioInput){ onGuardarPrecio(p.activo,precioInput,p.moneda==="ARS"?"ARS":"USD"); } setEditandoPrecio(null); }}>
+                          ✓
+                        </button>
+                      </div>
+                    : <>
+                        {p.cot?.precio_actual
+                          ? <>
+                              <div style={{fontSize:14,fontWeight:700}}>
+                                {p.cot.moneda==="USD"?"USD ":""}{Number(p.cot.precio_actual).toLocaleString("es-AR",{maximumFractionDigits:2})}
+                              </div>
+                              {p.cot.moneda==="USD" && dolar?.mep && (
+                                <div style={{fontSize:10,color:"var(--muted)"}}>≈ {formatARS(p.cot.precio_actual*dolar.mep)}</div>
+                              )}
+                            </>
+                          : <div style={{fontSize:12,color:"var(--accent)"}}>Tocá para ingresar</div>
+                        }
                       </>
-                    : <div style={{fontSize:12,color:"var(--muted)"}}>Sin cotizar</div>
                   }
                 </div>
               </div>
