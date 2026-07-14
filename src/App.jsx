@@ -87,6 +87,46 @@ function loadSettings() {
   try { return JSON.parse(localStorage.getItem("mg_settings")||"{}"); } catch { return {}; }
 }
 
+// ─── Frases motivacionales ────────────────────────────────────────────────────
+const FRASES = [
+  { texto: "El único modo de hacer un gran trabajo es amar lo que hacés.", autor: "Steve Jobs" },
+  { texto: "No contés los días, hacé que los días cuenten.", autor: "Muhammad Ali" },
+  { texto: "La vida es lo que pasa mientras estás ocupado haciendo otros planes.", autor: "John Lennon" },
+  { texto: "Caer está permitido. Levantarse es obligatorio.", autor: "" },
+  { texto: "No hay que apagar la luz del otro para que brille la propia.", autor: "Gandhi" },
+  { texto: "El éxito es la suma de pequeños esfuerzos repetidos día tras día.", autor: "Robert Collier" },
+  { texto: "Sé el cambio que querés ver en el mundo.", autor: "Gandhi" },
+  { texto: "Las personas que están lo suficientemente locas como para pensar que pueden cambiar el mundo, son las que lo hacen.", autor: "Steve Jobs" },
+  { texto: "No importa lo lento que vayas mientras no te detengas.", autor: "Confucio" },
+  { texto: "Todo parece imposible hasta que se hace.", autor: "Nelson Mandela" },
+  { texto: "Vivir es lo más raro del mundo. La mayoría de la gente solo existe.", autor: "Oscar Wilde" },
+  { texto: "La actitud determina la dirección.", autor: "" },
+  { texto: "Cada día es una nueva oportunidad para cambiar tu vida.", autor: "" },
+  { texto: "El fracaso es solo la oportunidad de comenzar de nuevo, esta vez con más inteligencia.", autor: "Henry Ford" },
+  { texto: "Lo que no te mata te hace más fuerte.", autor: "Friedrich Nietzsche" },
+  { texto: "El mejor momento para plantar un árbol fue hace 20 años. El segundo mejor momento es ahora.", autor: "Proverbio chino" },
+  { texto: "No te rindas. El principio siempre es lo más difícil.", autor: "" },
+  { texto: "La disciplina es elegir entre lo que querés ahora y lo que más querés.", autor: "Abraham Lincoln" },
+  { texto: "Quien tiene un porqué para vivir puede soportar casi cualquier cómo.", autor: "Friedrich Nietzsche" },
+  { texto: "Haz hoy lo que otros no quieren para tener mañana lo que otros no tienen.", autor: "" },
+  { texto: "La felicidad no es un destino, es una forma de viajar.", autor: "Margaret Lee Runbeck" },
+  { texto: "Nunca es demasiado tarde para ser lo que podrías haber sido.", autor: "George Eliot" },
+  { texto: "El coraje no es la ausencia del miedo, sino el juicio de que algo más importa.", autor: "Ambrose Redmoon" },
+  { texto: "Somos lo que hacemos repetidamente. La excelencia, entonces, no es un acto sino un hábito.", autor: "Aristóteles" },
+  { texto: "No busques que las cosas que suceden sucedan como quieres. Desea que las cosas que suceden sean como son y encontrarás tranquilidad.", autor: "Epicteto" },
+  { texto: "La mente que se abre a una nueva idea, jamás vuelve a su tamaño original.", autor: "Albert Einstein" },
+  { texto: "El único límite a nuestra realización de mañana serán nuestras dudas de hoy.", autor: "Franklin D. Roosevelt" },
+  { texto: "En medio de la dificultad reside la oportunidad.", autor: "Albert Einstein" },
+  { texto: "La vida no se mide por la cantidad de veces que respiramos, sino por los momentos que nos quitan el aliento.", autor: "" },
+  { texto: "Primero formamos hábitos, y luego los hábitos nos forman a nosotros.", autor: "John Dryden" },
+];
+
+function fraseDelDia() {
+  const inicio = new Date(new Date().getFullYear(), 0, 0);
+  const dia = Math.floor((new Date() - inicio) / 86400000);
+  return FRASES[dia % FRASES.length];
+}
+
 // ─── Datos estáticos ──────────────────────────────────────────────────────────
 const MEDIOS = [
   { id:"efectivo", name:"Efectivo", icon:"💵", color:"#10b981" },
@@ -310,22 +350,26 @@ function HomeTab({ gastosMes, totalMes, sueldo, fijos, onNavTo, onAgregar }) {
   const recientes = [...gastosMes].sort((a,b)=>b.date.localeCompare(a.date)).slice(0,4);
   const totalFijos = fijos.reduce((s,f)=>s+Number(f.amount),0);
 
-  const tips = [
-    "Registrá cada gasto en el momento para no olvidarlo.",
-    "Revisá tus suscripciones una vez al mes — siempre hay algo sin usar.",
-    "El primer paso para ahorrar es saber en qué gastás.",
-    "Pequeños gastos diarios se acumulan más de lo que parecen.",
-  ];
-  const tip = tips[new Date().getDate() % tips.length];
+  const frase = fraseDelDia();
 
   return (
     <>
       {/* Hero bienvenida */}
       <div className="home-hero">
         <div className="home-hero-glow"/>
-        <div className="home-icono-saludo">{icono}</div>
-        <div className="home-saludo">{saludo}</div>
-        <div className="home-subtitulo">Tus finanzas, bajo control</div>
+
+        {/* Saludo + frase en la misma fila */}
+        <div className="home-top-row">
+          <div className="home-saludo-col">
+            <span className="home-icono-saludo">{icono}</span>
+            <span className="home-saludo">{saludo}</span>
+          </div>
+          <div className="home-frase-col">
+            <div className="home-frase-comilla">"</div>
+            <div className="home-frase-texto">{frase.texto}</div>
+            {frase.autor && <div className="home-frase-autor">— {frase.autor}</div>}
+          </div>
+        </div>
 
         {/* Resumen del mes */}
         <div className="home-mes-card">
@@ -403,11 +447,6 @@ function HomeTab({ gastosMes, totalMes, sueldo, fijos, onNavTo, onAgregar }) {
         </>
       )}
 
-      {/* Tip del día */}
-      <div className="tip-card">
-        <span className="tip-icon">💡</span>
-        <span className="tip-text">{tip}</span>
-      </div>
 
       {gastosMes.length===0 && (
         <div className="vacio" style={{paddingTop:20}}>
@@ -874,10 +913,15 @@ const CSS = `
 
   /* ── Home ── */
   .home-hero { margin:0 -16px 0; padding:0 24px 28px; background:linear-gradient(175deg,#111827 0%,#0f1c3d 40%,#070b12 100%); position:relative; overflow:hidden; }
-  .home-hero-glow { position:absolute; top:-60px; left:50%; transform:translateX(-50%); width:320px; height:320px; border-radius:50%; background:radial-gradient(circle,rgba(99,102,241,.22) 0%,transparent 70%); pointer-events:none; }
-  .home-icono-saludo { font-size:36px; margin-top:12px; }
-  .home-saludo { font-size:28px; font-weight:800; letter-spacing:-.8px; margin-top:8px; color:#fff; }
-  .home-subtitulo { font-size:14px; color:rgba(255,255,255,.45); margin-top:3px; margin-bottom:24px; }
+  .home-hero-glow { position:absolute; top:-60px; left:50%; transform:translateX(-50%); width:340px; height:340px; border-radius:50%; background:radial-gradient(circle,rgba(99,102,241,.25) 0%,transparent 70%); pointer-events:none; }
+  .home-top-row { display:flex; align-items:flex-start; gap:16px; margin-top:16px; margin-bottom:24px; }
+  .home-saludo-col { display:flex; flex-direction:column; align-items:center; gap:6px; flex-shrink:0; padding-top:4px; }
+  .home-icono-saludo { font-size:28px; }
+  .home-saludo { font-size:12px; font-weight:600; color:rgba(255,255,255,.5); text-align:center; writing-mode:initial; }
+  .home-frase-col { flex:1; min-width:0; border-left:2px solid rgba(99,102,241,.35); padding-left:14px; }
+  .home-frase-comilla { font-size:32px; line-height:.6; color:rgba(99,102,241,.4); font-family:Georgia,serif; font-weight:900; margin-bottom:6px; }
+  .home-frase-texto { font-size:15px; font-weight:600; line-height:1.55; color:#fff; font-style:italic; margin-bottom:8px; }
+  .home-frase-autor { font-size:11px; font-weight:700; color:rgba(147,197,253,.65); letter-spacing:.2px; }
   .home-mes-card { background:rgba(255,255,255,.05); border:1px solid rgba(255,255,255,.1); border-radius:18px; padding:18px 20px; backdrop-filter:blur(10px); }
   .home-mes-label { font-size:11px; font-weight:600; color:rgba(255,255,255,.45); text-transform:uppercase; letter-spacing:.7px; margin-bottom:4px; text-transform:capitalize; }
   .home-mes-total { font-size:38px; font-weight:800; letter-spacing:-1.5px; color:#fff; line-height:1.1; }
@@ -907,10 +951,6 @@ const CSS = `
   .home-stat-label { display:block; font-size:10px; color:var(--muted); margin-top:2px; }
   .home-stat-div { width:1px; height:30px; background:var(--border); }
 
-  /* Tip */
-  .tip-card { display:flex; align-items:flex-start; gap:10px; background:rgba(99,102,241,.07); border:1px solid rgba(99,102,241,.15); border-radius:var(--r-sm); padding:14px 16px; margin:8px 0 24px; }
-  .tip-icon { font-size:18px; flex-shrink:0; margin-top:1px; }
-  .tip-text { font-size:13px; color:var(--muted); line-height:1.6; }
 
   /* ── Nav período ── */
   .nav-mes    { display:flex; align-items:center; justify-content:space-between; padding:12px 0 14px; }
