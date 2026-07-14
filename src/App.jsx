@@ -157,21 +157,24 @@ const NAV_ITEMS = [
   { id:"fijos",    icon:"🔁", label:"Gastos fijos"    },
   { id:"medios",   icon:"💳", label:"Medios de pago"  },
   { id:"analisis", icon:"📊", label:"Análisis"        },
+  { id:"metas",    icon:"🎯", label:"Metas de ahorro" },
 ];
 
 // ─── App ──────────────────────────────────────────────────────────────────────
 export default function App() {
-  const [tab,      setTab]      = useState("home");
-  const [drawer,   setDrawer]   = useState(false);
-  const [vista,    setVista]    = useState("mes");
-  const [period,   setPeriod]   = useState(currentMonth());
-  const [gastos,   setGastos]   = useState([]);
-  const [fijos,    setFijos]    = useState([]);
-  const [modal,    setModal]    = useState(null);
-  const [editing,  setEditing]  = useState(null);
-  const [loading,  setLoading]  = useState(true);
-  const [saving,   setSaving]   = useState(false);
-  const [settings, setSettings] = useState(loadSettings);
+  const [tab,            setTab]            = useState("home");
+  const [drawer,         setDrawer]         = useState(false);
+  const [vista,          setVista]          = useState("mes");
+  const [period,         setPeriod]         = useState(currentMonth());
+  const [gastos,         setGastos]         = useState([]);
+  const [fijos,          setFijos]          = useState([]);
+  const [metas,          setMetas]          = useState([]);
+  const [contribuciones, setContribuciones] = useState([]);
+  const [modal,          setModal]          = useState(null);
+  const [editing,        setEditing]        = useState(null);
+  const [loading,        setLoading]        = useState(true);
+  const [saving,         setSaving]         = useState(false);
+  const [settings,       setSettings]       = useState(loadSettings);
 
   const diaClose = Number(settings.diaClose) || null;
   const sueldo   = Number(settings.sueldo)   || 0;
@@ -188,27 +191,50 @@ export default function App() {
   function navTo(id) { setTab(id); setDrawer(false); }
 
   async function recargar() {
-    const [exp, fix] = await Promise.all([
-      dbGet("expenses",       { col:"date",       asc:false }),
-      dbGet("fixed_expenses", { col:"created_at", asc:true  }),
+    const [exp, fix, met, con] = await Promise.all([
+      dbGet("expenses",              { col:"date",       asc:false }),
+      dbGet("fixed_expenses",        { col:"created_at", asc:true  }),
+      dbGet("savings_goals",         { col:"created_at", asc:true  }),
+      dbGet("savings_contributions", { col:"date",        asc:false }),
     ]);
-    setGastos(exp); setFijos(fix);
-    return { exp, fix };
+    setGastos(exp); setFijos(fix); setMetas(met); setContribuciones(con);
+    return { exp, fix, met, con };
   }
 
   useEffect(()=>{
     (async()=>{
       setLoading(true);
       try {
-        const {exp,fix} = await recargar();
-        const mk = currentMonth();
-        const faltantes = fix.filter(f=>!exp.some(e=>e.fixed_ref===f.id && dateToMonth(e.date)===mk));
-        if (faltantes.length>0) {
-          await dbUpsert("expenses", faltantes.map(f=>({
-            id:uid(), description:f.description, amount:f.amount,
-            category:f.category, card:f.card,
-            date:todayStr(), is_fixed:true, fixed_ref:f.id,
-          })));
+        const {exp, fix} = await recargar();
+        const hoy = new Date();
+        const meses = [];
+        for (let i = 5; i >= 0; i--) {
+          const d = new Date(hoy.getFullYear(), hoy.getMonth() - i, 1);
+          meses.push(`${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}`);
+        }
+        const fijosActivos = fix.filter(f => f.activo !== false);
+        const filas = [];
+        for (const f of fijosActivos) {
+          const fCreatedMk = f.created_at ? f.created_at.substring(0, 7) : meses[0];
+          for (const mk of meses) {
+            if (mk < fCreatedMk) continue;
+            const yaExiste = exp.some(e => e.fixed_ref === f.id && dateToMonth(e.date) === mk);
+            if (!yaExiste) {
+              const dia = Number(f.dia_recurrencia) || 1;
+              const [y, m] = mk.split("-").map(Number);
+              const daysInMonth = new Date(y, m, 0).getDate();
+              const dayToUse = Math.min(dia, daysInMonth);
+              const dateStr = `${y}-${String(m).padStart(2,"0")}-${String(dayToUse).padStart(2,"0")}`;
+              filas.push({
+                id: uid(), description: f.description, amount: f.amount,
+                category: f.category, card: f.card,
+                date: dateStr, is_fixed: true, fixed_ref: f.id,
+              });
+            }
+          }
+        }
+        if (filas.length > 0) {
+          await dbUpsert("expenses", filas);
           await recargar();
         }
       } catch(e){ console.error(e.message); }
@@ -274,9 +300,19 @@ export default function App() {
     setSaving(true);
     try {
       const fid = editing?.id || uid();
-      await dbUpsert("fixed_expenses", [{id:fid, description:data.description, amount:Number(data.amount), category:data.category, card:data.card}]);
+      await dbUpsert("fixed_expenses", [{
+        id: fid, description: data.description, amount: Number(data.amount),
+        category: data.category, card: data.card,
+        dia_recurrencia: Number(data.dia_recurrencia) || null,
+        activo: data.activo !== false,
+      }]);
       if (!editing) {
-        await dbUpsert("expenses", [{id:uid(), description:data.description, amount:Number(data.amount), category:data.category, card:data.card, date:todayStr(), is_fixed:true, fixed_ref:fid}]);
+        const dia = Number(data.dia_recurrencia) || new Date().getDate();
+        const hoy = new Date();
+        const daysInMonth = new Date(hoy.getFullYear(), hoy.getMonth()+1, 0).getDate();
+        const dayToUse = Math.min(dia, daysInMonth);
+        const dateStr = `${hoy.getFullYear()}-${String(hoy.getMonth()+1).padStart(2,"0")}-${String(dayToUse).padStart(2,"0")}`;
+        await dbUpsert("expenses", [{id:uid(), description:data.description, amount:Number(data.amount), category:data.category, card:data.card, date:dateStr, is_fixed:true, fixed_ref:fid}]);
       }
       await recargar(); cerrarModal();
     } catch(e){ alert(e.message); }
@@ -285,6 +321,43 @@ export default function App() {
   async function eliminarFijo(id) {
     setSaving(true);
     try { await dbDelete("fixed_expenses", id); await recargar(); cerrarModal(); }
+    catch(e){ alert(e.message); }
+    setSaving(false);
+  }
+
+  async function guardarMeta(data) {
+    setSaving(true);
+    try {
+      await dbUpsert("savings_goals", [{
+        id: editing?.id || uid(),
+        name: data.name,
+        target_amount: Number(data.target_amount),
+        target_date: data.target_date || null,
+      }]);
+      await recargar(); cerrarModal();
+    } catch(e){ alert("Error: " + e.message); }
+    setSaving(false);
+  }
+  async function eliminarMeta(id) {
+    setSaving(true);
+    try { await dbDelete("savings_goals", id); await recargar(); cerrarModal(); }
+    catch(e){ alert(e.message); }
+    setSaving(false);
+  }
+  async function guardarContribucion(data) {
+    setSaving(true);
+    try {
+      await dbUpsert("savings_contributions", [{
+        id: uid(), goal_id: data.goal_id,
+        amount: Number(data.amount), date: data.date, note: data.note || null,
+      }]);
+      await recargar(); cerrarModal();
+    } catch(e){ alert("Error: " + e.message); }
+    setSaving(false);
+  }
+  async function eliminarContribucion(id) {
+    setSaving(true);
+    try { await dbDelete("savings_contributions", id); await recargar(); }
     catch(e){ alert(e.message); }
     setSaving(false);
   }
@@ -352,13 +425,16 @@ export default function App() {
             {tab==="fijos"    && <FijosTab fijos={fijos} onAgregar={()=>abrirModal("fijo")} onEditar={f=>abrirModal("fijo",f)}/>}
             {tab==="medios"   && <MediosTab gastos={gastosPeriodo} total={totalPeriodo} label={labelPeriod} esActual={esActual} onPrev={irPrev} onNext={irNext}/>}
             {tab==="analisis" && <AnalisisTab gastos={gastosPeriodo} total={totalPeriodo} label={labelPeriod} sueldo={sueldo} esActual={esActual} onPrev={irPrev} onNext={irNext} onEditarSueldo={()=>abrirModal("settings")}/>}
+            {tab==="metas"    && <MetasTab metas={metas} contribuciones={contribuciones} saving={saving} onNuevaMeta={()=>abrirModal("meta")} onEditarMeta={m=>abrirModal("meta",m)} onEliminarMeta={id=>eliminarMeta(id)} onAgregarAporte={m=>abrirModal("contribucion",m)} onEliminarAporte={id=>eliminarContribucion(id)}/>}
           </div>
         </div>
       </div>
 
-      {modal==="gasto"    && <GastoModal  gasto={editing}  saving={saving} onGuardar={guardarGasto}  onEliminar={editing?()=>eliminarGasto(editing.id):null}  onCerrar={cerrarModal}/>}
-      {modal==="fijo"     && <FijoModal   fijo={editing}   saving={saving} onGuardar={guardarFijo}   onEliminar={editing?()=>eliminarFijo(editing.id):null}    onCerrar={cerrarModal}/>}
-      {modal==="settings" && <SettingsModal settings={settings} onGuardar={guardarSettings} onCerrar={cerrarModal}/>}
+      {modal==="gasto"        && <GastoModal        gasto={editing}  saving={saving} onGuardar={guardarGasto}       onEliminar={editing?()=>eliminarGasto(editing.id):null}  onCerrar={cerrarModal}/>}
+      {modal==="fijo"         && <FijoModal         fijo={editing}   saving={saving} onGuardar={guardarFijo}        onEliminar={editing?()=>eliminarFijo(editing.id):null}    onCerrar={cerrarModal}/>}
+      {modal==="meta"         && <MetaModal         meta={editing}   saving={saving} onGuardar={guardarMeta}        onEliminar={editing?()=>eliminarMeta(editing.id):null}    onCerrar={cerrarModal}/>}
+      {modal==="contribucion" && <ContribucionModal meta={editing}   saving={saving} onGuardar={guardarContribucion}                                                           onCerrar={cerrarModal}/>}
+      {modal==="settings"     && <SettingsModal settings={settings} onGuardar={guardarSettings} onCerrar={cerrarModal}/>}
     </>
   );
 }
@@ -484,9 +560,43 @@ function HomeTab({ gastosMes, totalMes, sueldo, fijos, onNavTo, onAgregar }) {
 
 // ─── Gastos ───────────────────────────────────────────────────────────────────
 function GastosTab({ gastos, label, total, vista, diaClose, esActual, onPrev, onNext, onCambiarVista, onAgregar, onEditar }) {
+  const [filtrosOpen, setFiltrosOpen] = useState(false);
+  const [texto,       setTexto]       = useState("");
+  const [categorias,  setCategorias]  = useState([]);
+  const [tipo,        setTipo]        = useState("todos");
+  const [montoMin,    setMontoMin]    = useState("");
+  const [montoMax,    setMontoMax]    = useState("");
+  const [fechaDesde,  setFechaDesde]  = useState("");
+  const [fechaHasta,  setFechaHasta]  = useState("");
+
+  function limpiarFiltros() {
+    setTexto(""); setCategorias([]); setTipo("todos");
+    setMontoMin(""); setMontoMax(""); setFechaDesde(""); setFechaHasta("");
+  }
+  function toggleCat(id) {
+    setCategorias(prev => prev.includes(id) ? prev.filter(c=>c!==id) : [...prev,id]);
+  }
+
+  const filtrosActivos = texto || categorias.length>0 || tipo!=="todos" || montoMin || montoMax || fechaDesde || fechaHasta;
+  const nFiltros = [texto, categorias.length>0, tipo!=="todos", montoMin||montoMax, fechaDesde||fechaHasta].filter(Boolean).length;
+
+  const gastosFiltrados = gastos.filter(e => {
+    if (texto && !(e.description||"").toLowerCase().includes(texto.toLowerCase())) return false;
+    if (categorias.length>0 && !categorias.includes(e.category)) return false;
+    if (tipo==="fijo"     && !e.is_fixed) return false;
+    if (tipo==="variable" &&  e.is_fixed) return false;
+    if (montoMin && Number(e.amount) < Number(montoMin)) return false;
+    if (montoMax && Number(e.amount) > Number(montoMax)) return false;
+    if (fechaDesde && e.date < fechaDesde) return false;
+    if (fechaHasta && e.date > fechaHasta) return false;
+    return true;
+  });
+  const totalFiltrado = gastosFiltrados.reduce((s,e)=>s+Number(e.amount),0);
+
   const grupos = {};
-  gastos.forEach(e=>{ if(!grupos[e.date]) grupos[e.date]=[]; grupos[e.date].push(e); });
+  gastosFiltrados.forEach(e=>{ if(!grupos[e.date]) grupos[e.date]=[]; grupos[e.date].push(e); });
   const fechas = Object.keys(grupos).sort((a,b)=>b.localeCompare(a));
+
   return (
     <>
       <div className="vista-toggle">
@@ -496,9 +606,61 @@ function GastosTab({ gastos, label, total, vista, diaClose, esActual, onPrev, on
         </button>
       </div>
       <NavPeriod label={label} esActual={esActual} onPrev={onPrev} onNext={onNext}/>
-      <SummaryCard total={total} count={gastos.length} labelCount="movimiento"/>
+
+      {/* Barra de búsqueda + toggle filtros */}
+      <div className="filter-bar">
+        <input className="filter-search" type="text" placeholder="Buscar…"
+          value={texto} onChange={e=>setTexto(e.target.value)}/>
+        <button className={`filter-toggle-btn${filtrosActivos?" activo":""}`}
+          onClick={()=>setFiltrosOpen(o=>!o)}>
+          Filtros{nFiltros>0?` (${nFiltros})`:""}
+        </button>
+      </div>
+
+      {filtrosOpen && (
+        <div className="filter-panel">
+          <div>
+            <div className="filter-section-label">Categoría</div>
+            <div className="filter-cats">
+              {CATS.map(c=>(
+                <button key={c.id} className={`filter-cat-btn${categorias.includes(c.id)?" sel":""}`}
+                  onClick={()=>toggleCat(c.id)}>
+                  {c.icon} {c.name}
+                </button>
+              ))}
+            </div>
+          </div>
+          <div>
+            <div className="filter-section-label">Tipo</div>
+            <div className="filter-tipo-row">
+              {[["todos","Todos"],["fijo","Fijos"],["variable","Variables"]].map(([v,l])=>(
+                <button key={v} className={`filter-tipo-btn${tipo===v?" sel":""}`} onClick={()=>setTipo(v)}>{l}</button>
+              ))}
+            </div>
+          </div>
+          <div>
+            <div className="filter-section-label">Monto</div>
+            <div className="filter-rango">
+              <input type="number" inputMode="numeric" placeholder="Mín $" value={montoMin} onChange={e=>setMontoMin(e.target.value)}/>
+              <input type="number" inputMode="numeric" placeholder="Máx $" value={montoMax} onChange={e=>setMontoMax(e.target.value)}/>
+            </div>
+          </div>
+          <div>
+            <div className="filter-section-label">Fecha</div>
+            <div className="filter-rango">
+              <input type="date" value={fechaDesde} onChange={e=>setFechaDesde(e.target.value)}/>
+              <input type="date" value={fechaHasta} onChange={e=>setFechaHasta(e.target.value)}/>
+            </div>
+          </div>
+          {filtrosActivos && (
+            <button className="btn-limpiar" onClick={limpiarFiltros}>✕ Limpiar todos los filtros</button>
+          )}
+        </div>
+      )}
+
+      <SummaryCard total={totalFiltrado} count={gastosFiltrados.length} labelCount="movimiento"/>
       {fechas.length===0
-        ? <Vacio icon="🧾" titulo="Sin gastos" sub="Tocá + para agregar"/>
+        ? <Vacio icon="🧾" titulo="Sin gastos" sub={filtrosActivos?"Ningún gasto coincide con los filtros":"Tocá + para agregar"}/>
         : fechas.map(fecha=>(
           <div key={fecha}>
             <div className="fecha-label">{dateLabel(fecha)}</div>
@@ -704,6 +866,63 @@ function FilaGasto({ gasto:e, onClick, conSigno=true }) {
   );
 }
 
+// ─── Metas de ahorro ─────────────────────────────────────────────────────────
+function MetasTab({ metas, contribuciones, saving, onNuevaMeta, onEditarMeta, onEliminarMeta, onAgregarAporte, onEliminarAporte }) {
+  return (
+    <>
+      <div className="page-title">Metas de ahorro</div>
+      {metas.length === 0
+        ? <Vacio icon="🎯" titulo="Sin metas" sub="Tocá + para crear tu primera meta"/>
+        : metas.map(meta => {
+          const aportado = contribuciones.filter(c=>c.goal_id===meta.id).reduce((s,c)=>s+Number(c.amount),0);
+          const pct = meta.target_amount > 0 ? Math.min(100,(aportado/meta.target_amount)*100) : 0;
+          const contribs = contribuciones.filter(c=>c.goal_id===meta.id);
+          const cumplida = aportado >= Number(meta.target_amount);
+          return (
+            <div key={meta.id} className="meta-card">
+              <div className="meta-header">
+                <div style={{flex:1,minWidth:0}}>
+                  <div className="meta-nombre">{cumplida?"✅ ":""}{meta.name}</div>
+                  {meta.target_date && (
+                    <div className="meta-fecha">
+                      Objetivo: {new Date(meta.target_date+"T12:00:00").toLocaleDateString("es-AR",{day:"numeric",month:"long",year:"numeric"})}
+                    </div>
+                  )}
+                </div>
+                <button className="icon-btn-sm" onClick={()=>onEditarMeta(meta)}>✏️</button>
+              </div>
+              <div className="meta-progress-label">
+                <span style={{fontWeight:800,fontSize:20}}>{formatARS(aportado)}</span>
+                <span className="meta-de-label"> de {formatARS(meta.target_amount)}</span>
+                <span className="meta-pct">{pct.toFixed(0)}%</span>
+              </div>
+              <div className="barra-track" style={{height:10,marginTop:10,marginBottom:4}}>
+                <div className="barra-fill" style={{width:`${pct}%`,background:cumplida?"var(--success)":pct>=70?"var(--warn)":"var(--grad)"}}/>
+              </div>
+              {contribs.length > 0 && (
+                <div className="meta-contribs">
+                  {contribs.map(c=>(
+                    <div key={c.id} className="meta-contrib-fila">
+                      <span className="meta-contrib-fecha">{dateLabel(c.date)}</span>
+                      {c.note && <span className="meta-contrib-nota">{c.note}</span>}
+                      <span className="meta-contrib-monto">+{formatARS(c.amount)}</span>
+                      <button className="meta-contrib-del" onClick={()=>onEliminarAporte(c.id)}>✕</button>
+                    </div>
+                  ))}
+                </div>
+              )}
+              <button className="btn-aporte" onClick={()=>onAgregarAporte(meta)} disabled={saving}>
+                + Agregar aporte
+              </button>
+            </div>
+          );
+        })
+      }
+      <button className="fab" onClick={onNuevaMeta}>+</button>
+    </>
+  );
+}
+
 function Vacio({ icon, titulo, sub }) {
   return (
     <div className="vacio">
@@ -770,10 +989,12 @@ function GastoModal({ gasto, saving, onGuardar, onEliminar, onCerrar }) {
 
 function FijoModal({ fijo, saving, onGuardar, onEliminar, onCerrar }) {
   const [form, setForm] = useState({
-    description: fijo?.description || "",
-    amount:      fijo?.amount ? String(fijo.amount) : "",
-    category:    fijo?.category || CATS[0].id,
-    card:        fijo?.card     || MEDIOS[0].id,
+    description:     fijo?.description || "",
+    amount:          fijo?.amount ? String(fijo.amount) : "",
+    category:        fijo?.category || CATS[0].id,
+    card:            fijo?.card     || MEDIOS[0].id,
+    dia_recurrencia: fijo?.dia_recurrencia ? String(fijo.dia_recurrencia) : "",
+    activo:          fijo?.activo !== false,
   });
   const set     = (k,v) => setForm(f=>({...f,[k]:v}));
   const numStr  = form.amount.replace(/\D/g,"");
@@ -792,10 +1013,90 @@ function FijoModal({ fijo, saving, onGuardar, onEliminar, onCerrar }) {
       </Campo>
       <Campo label="Categoría"><PickerCategoria value={form.category} onChange={v=>set("category",v)}/></Campo>
       <Campo label="Medio de pago"><PickerMedio value={form.card} onChange={v=>set("card",v)}/></Campo>
+      <Campo label="Día del mes en que se genera">
+        <input type="number" inputMode="numeric" placeholder="Ej: 1  (vacío = día 1)"
+          min="1" max="31" value={form.dia_recurrencia} onChange={e=>set("dia_recurrencia",e.target.value)}/>
+        <div style={{fontSize:11,color:"var(--muted)",marginTop:6,lineHeight:1.6}}>
+          Cada mes se crea automáticamente en este día. Si no abriste la app, se genera retroactivamente.
+        </div>
+      </Campo>
+      {fijo && (
+        <Campo label="Estado de la recurrencia">
+          <div className="toggle-row">
+            <span style={{fontSize:14,fontWeight:600,color:form.activo?"var(--success)":"var(--muted)"}}>
+              {form.activo ? "Activo — genera cada mes" : "Pausado — no se genera"}
+            </span>
+            <button className={`toggle-pill${form.activo?" on":""}`} onClick={()=>set("activo",!form.activo)}>
+              <span className="toggle-knob"/>
+            </button>
+          </div>
+        </Campo>
+      )}
       <button className="btn-primario" disabled={!numStr||saving} onClick={()=>onGuardar({...form,amount:numStr})}>
         {saving?"Guardando…":fijo?"Guardar cambios":"Agregar gasto fijo"}
       </button>
       {onEliminar && <button className="btn-peligro" onClick={onEliminar} disabled={saving}>Eliminar</button>}
+    </Modal>
+  );
+}
+
+function MetaModal({ meta, saving, onGuardar, onEliminar, onCerrar }) {
+  const [form, setForm] = useState({
+    name:          meta?.name || "",
+    target_amount: meta?.target_amount ? String(meta.target_amount) : "",
+    target_date:   meta?.target_date || "",
+  });
+  const set    = (k,v) => setForm(f=>({...f,[k]:v}));
+  const numStr = form.target_amount.replace(/\D/g,"");
+  const display= numStr ? new Intl.NumberFormat("es-AR").format(Number(numStr)) : "";
+
+  return (
+    <Modal titulo={meta?"Editar meta":"Nueva meta de ahorro"} onCerrar={onCerrar}>
+      <Campo label="Nombre de la meta">
+        <input type="text" placeholder="Ej: Viaje a Europa, Fondo de emergencia…"
+          value={form.name} onChange={e=>set("name",e.target.value)}/>
+      </Campo>
+      <Campo label="Monto objetivo">
+        <input className="input-monto" type="text" inputMode="numeric" placeholder="$ 0"
+          value={display?`$ ${display}`:""}
+          onChange={e=>set("target_amount",e.target.value.replace(/\D/g,""))}/>
+      </Campo>
+      <Campo label="Fecha objetivo (opcional)">
+        <input type="date" value={form.target_date} onChange={e=>set("target_date",e.target.value)}/>
+      </Campo>
+      <button className="btn-primario" disabled={!form.name||!numStr||saving}
+        onClick={()=>onGuardar({...form,target_amount:numStr})}>
+        {saving?"Guardando…":meta?"Guardar cambios":"Crear meta"}
+      </button>
+      {onEliminar && <button className="btn-peligro" onClick={onEliminar} disabled={saving}>Eliminar meta</button>}
+    </Modal>
+  );
+}
+
+function ContribucionModal({ meta, saving, onGuardar, onCerrar }) {
+  const [form, setForm] = useState({ amount:"", date:todayStr(), note:"" });
+  const set    = (k,v) => setForm(f=>({...f,[k]:v}));
+  const numStr = form.amount.replace(/\D/g,"");
+  const display= numStr ? new Intl.NumberFormat("es-AR").format(Number(numStr)) : "";
+
+  return (
+    <Modal titulo={`Aporte a "${meta?.name}"`} onCerrar={onCerrar}>
+      <Campo label="Monto del aporte">
+        <input className="input-monto" type="text" inputMode="numeric" placeholder="$ 0"
+          value={display?`$ ${display}`:""}
+          onChange={e=>set("amount",e.target.value.replace(/\D/g,""))}/>
+      </Campo>
+      <Campo label="Fecha">
+        <input type="date" value={form.date} onChange={e=>set("date",e.target.value)}/>
+      </Campo>
+      <Campo label="Nota (opcional)">
+        <input type="text" placeholder="Ej: Bonus, ahorro del mes…"
+          value={form.note} onChange={e=>set("note",e.target.value)}/>
+      </Campo>
+      <button className="btn-primario" disabled={!numStr||saving}
+        onClick={()=>onGuardar({...form,amount:numStr,goal_id:meta.id})}>
+        {saving?"Guardando…":"Agregar aporte"}
+      </button>
     </Modal>
   );
 }
@@ -1106,6 +1407,57 @@ const CSS = `
   .cat-btn:active { opacity:.7; }
   .cat-btn-label { font-size:9px; font-weight:600; color:var(--muted); text-align:center; line-height:1.2; }
   .cat-btn.sel .cat-btn-label { color:var(--cc); }
+
+  /* ── Toggle pill ── */
+  .toggle-row  { display:flex; justify-content:space-between; align-items:center; padding:4px 0; }
+  .toggle-pill { width:48px; height:26px; border-radius:99px; background:rgba(255,255,255,.12); position:relative; transition:background .2s; flex-shrink:0; }
+  .toggle-pill.on { background:var(--accent); }
+  .toggle-knob { position:absolute; top:3px; left:3px; width:20px; height:20px; border-radius:50%; background:#fff; transition:transform .2s; display:block; box-shadow:0 1px 4px rgba(0,0,0,.3); }
+  .toggle-pill.on .toggle-knob { transform:translateX(22px); }
+
+  /* ── Filtros ── */
+  .filter-bar         { display:flex; gap:8px; margin-bottom:8px; }
+  .filter-search      { flex:1; background:var(--card); border:1.5px solid var(--border); border-radius:99px; padding:10px 16px; font-size:14px; color:var(--text); }
+  .filter-search:focus{ border-color:var(--accent); outline:none; }
+  .filter-toggle-btn  { flex-shrink:0; padding:10px 16px; border-radius:99px; font-size:13px; font-weight:600; background:var(--card); border:1.5px solid var(--border); color:var(--muted); }
+  .filter-toggle-btn.activo { border-color:var(--accent); color:var(--accent2); background:rgba(59,130,246,.1); }
+  .filter-toggle-btn:active { opacity:.7; }
+  .filter-panel       { background:var(--card); border:1px solid var(--border); border-radius:var(--r-sm); padding:16px; margin-bottom:10px; display:flex; flex-direction:column; gap:14px; }
+  .filter-section-label { font-size:10px; font-weight:700; color:var(--muted); text-transform:uppercase; letter-spacing:.6px; margin-bottom:6px; }
+  .filter-cats        { display:flex; flex-wrap:wrap; gap:6px; }
+  .filter-cat-btn     { padding:5px 11px; border-radius:99px; font-size:12px; font-weight:600; border:1.5px solid var(--border); background:var(--card2); color:var(--muted); }
+  .filter-cat-btn.sel { border-color:var(--accent); color:var(--accent2); background:rgba(59,130,246,.12); }
+  .filter-cat-btn:active { opacity:.7; }
+  .filter-tipo-row    { display:flex; gap:6px; }
+  .filter-tipo-btn    { flex:1; padding:9px 4px; border-radius:99px; font-size:13px; font-weight:600; border:1.5px solid var(--border); background:var(--card2); color:var(--muted); }
+  .filter-tipo-btn.sel{ background:var(--grad); border-color:transparent; color:#fff; }
+  .filter-tipo-btn:active { opacity:.7; }
+  .filter-rango       { display:flex; gap:8px; }
+  .filter-rango input { flex:1; background:var(--card2); border:1.5px solid rgba(59,130,246,.12); border-radius:var(--r-xs); padding:8px 10px; font-size:13px; color:var(--text); }
+  .filter-rango input:focus { border-color:var(--accent); outline:none; }
+  .btn-limpiar        { width:100%; padding:10px; border-radius:var(--r-sm); font-weight:600; font-size:13px; background:rgba(244,63,94,.06); color:var(--danger); border:1px solid rgba(244,63,94,.18); }
+  .btn-limpiar:active { opacity:.7; }
+
+  /* ── Metas de ahorro ── */
+  .meta-card           { background:var(--card); border:1px solid var(--border); border-radius:var(--r); padding:20px; margin-bottom:12px; }
+  .meta-header         { display:flex; justify-content:space-between; align-items:flex-start; gap:10px; margin-bottom:10px; }
+  .meta-nombre         { font-size:17px; font-weight:700; letter-spacing:-.3px; line-height:1.3; }
+  .meta-fecha          { font-size:12px; color:var(--muted); margin-top:3px; }
+  .icon-btn-sm         { width:34px; height:34px; border-radius:50%; background:rgba(255,255,255,.07); border:1px solid var(--border); display:flex; align-items:center; justify-content:center; font-size:14px; flex-shrink:0; }
+  .icon-btn-sm:active  { opacity:.6; }
+  .meta-progress-label { display:flex; align-items:baseline; gap:4px; margin-top:8px; }
+  .meta-de-label       { font-size:13px; color:var(--muted); flex:1; }
+  .meta-pct            { font-size:13px; font-weight:700; color:var(--accent2); }
+  .meta-contribs       { border-top:1px solid var(--border); margin-top:14px; padding-top:12px; display:flex; flex-direction:column; gap:9px; }
+  .meta-contrib-fila   { display:flex; align-items:center; gap:8px; font-size:13px; }
+  .meta-contrib-fecha  { color:var(--muted); flex-shrink:0; font-size:12px; }
+  .meta-contrib-nota   { color:var(--muted); flex:1; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-style:italic; font-size:12px; }
+  .meta-contrib-monto  { font-weight:700; color:var(--success); flex-shrink:0; }
+  .meta-contrib-del    { width:22px; height:22px; border-radius:50%; background:rgba(244,63,94,.1); color:var(--danger); font-size:10px; flex-shrink:0; display:flex; align-items:center; justify-content:center; }
+  .meta-contrib-del:active { opacity:.6; }
+  .btn-aporte          { width:100%; padding:12px; border-radius:var(--r-sm); font-weight:600; font-size:14px; background:rgba(59,130,246,.08); color:var(--accent2); border:1px solid rgba(59,130,246,.15); margin-top:14px; }
+  .btn-aporte:active   { opacity:.7; }
+  .btn-aporte:disabled { opacity:.4; cursor:default; }
 
   /* ── Picker medio ── */
   .medio-picker { display:flex; gap:8px; }
