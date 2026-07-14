@@ -171,6 +171,7 @@ export default function App() {
   const [metas,          setMetas]          = useState([]);
   const [contribuciones, setContribuciones] = useState([]);
   const [dolar,          setDolar]          = useState(null);
+  const [online,         setOnline]         = useState(navigator.onLine);
   const [modal,          setModal]          = useState(null);
   const [editing,        setEditing]        = useState(null);
   const [loading,        setLoading]        = useState(true);
@@ -201,6 +202,19 @@ export default function App() {
     setGastos(exp); setFijos(fix); setMetas(met); setContribuciones(con);
     return { exp, fix, met, con };
   }
+
+  useEffect(()=>{
+    const on  = () => setOnline(true);
+    const off = () => setOnline(false);
+    window.addEventListener("online",  on);
+    window.addEventListener("offline", off);
+    const params = new URLSearchParams(window.location.search);
+    if (params.get("nuevo") === "1") {
+      setModal("gasto");
+      window.history.replaceState({}, "", window.location.pathname);
+    }
+    return () => { window.removeEventListener("online", on); window.removeEventListener("offline", off); };
+  }, []);
 
   useEffect(()=>{
     fetch("https://dolarapi.com/v1/dolares")
@@ -417,6 +431,7 @@ export default function App() {
 
         {/* Columna principal */}
         <div className="main-col">
+          {!online && <div className="offline-banner">📵 Sin conexión — mostrando datos guardados</div>}
           <header className={`topbar${tab==="home"?" topbar-home":""}`}>
             <button className="ham-btn" onClick={()=>setDrawer(true)}>
               <span/><span/><span/>
@@ -432,7 +447,7 @@ export default function App() {
           </header>
 
           <div className="content">
-            {tab==="home"     && <HomeTab gastosMes={gastosMesActual} totalMes={totalMesActual} sueldo={sueldo} fijos={fijos} onNavTo={navTo} onAgregar={()=>abrirModal("gasto")}/>}
+            {tab==="home"     && <HomeTab gastosMes={gastosMesActual} todosGastos={gastos} totalMes={totalMesActual} sueldo={sueldo} fijos={fijos} onNavTo={navTo} onAgregar={()=>abrirModal("gasto")}/>}
             {tab==="gastos"   && <GastosTab gastos={gastosPeriodo} label={labelPeriod} total={totalPeriodo} vista={vista} diaClose={diaClose} esActual={esActual} onPrev={irPrev} onNext={irNext} onCambiarVista={cambiarVista} onAgregar={()=>abrirModal("gasto")} onEditar={e=>abrirModal("gasto",e)}/>}
             {tab==="fijos"    && <FijosTab fijos={fijos} onAgregar={()=>abrirModal("fijo")} onEditar={f=>abrirModal("fijo",f)}/>}
             {tab==="medios"   && <MediosTab gastos={gastosPeriodo} total={totalPeriodo} label={labelPeriod} esActual={esActual} onPrev={irPrev} onNext={irNext}/>}
@@ -452,12 +467,27 @@ export default function App() {
 }
 
 // ─── Home ─────────────────────────────────────────────────────────────────────
-function HomeTab({ gastosMes, totalMes, sueldo, fijos, onNavTo, onAgregar }) {
+function HomeTab({ gastosMes, todosGastos, totalMes, sueldo, fijos, onNavTo, onAgregar }) {
   const [saludo, icono] = greeting();
   const ahorro   = sueldo - totalMes;
   const pctGasto = sueldo > 0 ? Math.min(100,(totalMes/sueldo)*100) : 0;
   const recientes = [...gastosMes].sort((a,b)=>b.date.localeCompare(a.date)).slice(0,4);
   const totalFijos = fijos.reduce((s,f)=>s+Number(f.amount),0);
+
+  // Resumen semanal
+  const hoy = new Date();
+  const diaSem = hoy.getDay() || 7;
+  const lunesActual = new Date(hoy); lunesActual.setDate(hoy.getDate() - diaSem + 1);
+  const lunesAnterior = new Date(lunesActual); lunesAnterior.setDate(lunesActual.getDate() - 7);
+  const toStr = d => `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}-${String(d.getDate()).padStart(2,"0")}`;
+  const strLunes = toStr(lunesActual);
+  const strLunesAnt = toStr(lunesAnterior);
+  const strHoy = toStr(hoy);
+  const semActual  = todosGastos.filter(e => e.date >= strLunes    && e.date <= strHoy);
+  const semAnterior= todosGastos.filter(e => e.date >= strLunesAnt && e.date <  strLunes);
+  const totalSemA  = semActual.reduce((s,e)=>s+Number(e.amount),0);
+  const totalSemAnt= semAnterior.reduce((s,e)=>s+Number(e.amount),0);
+  const diffSem    = totalSemA - totalSemAnt;
 
   const frase = fraseDelDia();
 
@@ -483,27 +513,46 @@ function HomeTab({ gastosMes, totalMes, sueldo, fijos, onNavTo, onAgregar }) {
         {/* Resumen del mes */}
         <div className="home-mes-card">
           <div className="home-mes-label">{monthLabel(currentMonth())}</div>
-          <div className="home-mes-total">{formatARS(totalMes)}</div>
-          {sueldo > 0 && (
-            <div className="home-mes-ahorro">
-              {ahorro >= 0
-                ? <span className="ahorro-pos">Ahorrás {formatARS(ahorro)}</span>
-                : <span className="ahorro-neg">Déficit {formatARS(Math.abs(ahorro))}</span>
-              }
-            </div>
-          )}
-          {sueldo > 0 && (
-            <div className="home-barra-wrap">
-              <div className="home-barra-track">
-                <div className="home-barra-fill" style={{
-                  width:`${pctGasto}%`,
-                  background: pctGasto>90?"#f43f5e":pctGasto>70?"#fbbf24":"rgba(255,255,255,.85)"
-                }}/>
+          {sueldo > 0 ? (
+            <>
+              <Velocimetro pct={pctGasto}/>
+              <div className="home-mes-total" style={{textAlign:"center",marginTop:4}}>{formatARS(totalMes)}</div>
+              <div className="home-mes-ahorro" style={{textAlign:"center"}}>
+                {ahorro >= 0
+                  ? <span className="ahorro-pos">Ahorrás {formatARS(ahorro)}</span>
+                  : <span className="ahorro-neg">Déficit {formatARS(Math.abs(ahorro))}</span>
+                }
               </div>
-              <div className="home-barra-pct">{pctGasto.toFixed(0)}% del sueldo</div>
-            </div>
+            </>
+          ) : (
+            <div className="home-mes-total">{formatARS(totalMes)}</div>
           )}
         </div>
+
+        {/* Resumen semanal */}
+        {(totalSemA > 0 || totalSemAnt > 0) && (
+          <div className="sem-card">
+            <div className="sem-titulo">Esta semana</div>
+            <div className="sem-row">
+              <div className="sem-col">
+                <div className="sem-label">Esta semana</div>
+                <div className="sem-monto">{formatARS(totalSemA)}</div>
+                <div className="sem-cant">{semActual.length} gastos</div>
+              </div>
+              <div className="sem-div"/>
+              <div className="sem-col">
+                <div className="sem-label">Semana anterior</div>
+                <div className="sem-monto" style={{color:"var(--muted)"}}>{formatARS(totalSemAnt)}</div>
+                <div className="sem-cant">{semAnterior.length} gastos</div>
+              </div>
+              {totalSemAnt > 0 && (
+                <div className="sem-diff" style={{color: diffSem>0?"var(--danger)":"var(--success)"}}>
+                  {diffSem > 0 ? "▲" : "▼"} {Math.abs((diffSem/totalSemAnt)*100).toFixed(0)}%
+                </div>
+              )}
+            </div>
+          </div>
+        )}
       </div>
 
       {/* Accesos rápidos */}
@@ -755,6 +804,16 @@ function AnalisisTab({ gastos, todosGastos, total, label, sueldo, esActual, onPr
   const pctAhorro = sueldo > 0 ? Math.max(0,(ahorro/sueldo)*100) : 0;
   const porCat    = CATS.map(c=>({...c, total: gastos.filter(e=>e.category===c.id).reduce((s,e)=>s+Number(e.amount),0)})).filter(c=>c.total>0).sort((a,b)=>b.total-a.total);
 
+  // Notas por período
+  const notaKey = `mg_nota_${currentMonth()}`;
+  const [nota, setNota] = useState(()=>localStorage.getItem(notaKey)||"");
+  function guardarNota(v) { setNota(v); localStorage.setItem(notaKey, v); }
+
+  // Promedio por día
+  const hoy = new Date();
+  const diasTranscurridos = esActual ? hoy.getDate() : new Date(hoy.getFullYear(), hoy.getMonth()+1, 0).getDate();
+  const promDia = diasTranscurridos > 0 ? total / diasTranscurridos : 0;
+
   // ── Comparativa 6 meses ──
   const hoy = new Date();
   const ultimos6 = Array.from({length:6},(_,i)=>{
@@ -791,6 +850,12 @@ function AnalisisTab({ gastos, todosGastos, total, label, sueldo, esActual, onPr
   if (sueldo > 0 && ahorro < 0)  ia.push(`🚨 Gastás ${formatARS(Math.abs(ahorro))} más de lo que ganás. Prioridad: reducir gastos variables hasta volver al equilibrio.`);
   if (sueldo > 0 && pctAhorro >= 20) ia.push(`🏆 Ahorrás el ${pctAhorro.toFixed(0)}% del sueldo. Excelente. Considerá invertir el excedente para no perder contra la inflación.`);
   if (sueldo === 0) ia.push("💡 Configurá tu sueldo en ⚙️ para ver el análisis completo personalizado.");
+  // Sugerencia de ahorro concreta
+  const catRecortable = porCat.find(c => !["hogar","expensas"].includes(c.id));
+  if (catRecortable && sueldo > 0) {
+    const ahorroPotencial = catRecortable.total * 0.2;
+    ia.push(`✂️ Si reducís ${catRecortable.name} un 20%, ahorrarías ${formatARS(ahorroPotencial)} extra este mes.`);
+  }
 
   // ── Análisis tarjeta de crédito ──
   const gastosCred  = gastos.filter(e=>e.card==="credito");
@@ -829,16 +894,22 @@ function AnalisisTab({ gastos, todosGastos, total, label, sueldo, esActual, onPr
         )}
       </div>
 
+      {/* Notas del período */}
+      <div className="nota-periodo">
+        <textarea className="nota-input" placeholder="📝 Anotá algo de este mes: viaje, evento, contexto…"
+          value={nota} onChange={e=>guardarNota(e.target.value)} rows={2}/>
+      </div>
+
       {sueldo>0 && (
         <div className="stats-row">
           {[
             {label:"Gastado",    val:`${pctGasto.toFixed(0)}%`,  color:"var(--danger)"},
             {label:"Ahorrado",   val:`${pctAhorro.toFixed(0)}%`, color:pctAhorro>=20?"var(--success)":"var(--warn)"},
-            {label:"Movimientos",val:gastos.length,              color:"var(--text)"},
+            {label:"Prom/día",   val:formatARS(promDia).replace("$ ","$"), color:"var(--text)"},
           ].map(s=>(
             <div key={s.label} className="stat-card">
               <div className="stat-label">{s.label}</div>
-              <div className="stat-val" style={{color:s.color}}>{s.val}</div>
+              <div className="stat-val" style={{color:s.color,fontSize:s.label==="Prom/día"?14:22}}>{s.val}</div>
             </div>
           ))}
         </div>
@@ -1010,6 +1081,24 @@ function FilaGasto({ gasto:e, onClick, conSigno=true }) {
         </div>
       </div>
       <div className="fila-monto" style={{color:cat.color}}>{conSigno?"-":""}{formatARS(e.amount)}</div>
+    </div>
+  );
+}
+
+// ─── Velocímetro ─────────────────────────────────────────────────────────────
+function Velocimetro({ pct }) {
+  const r = 50, circ = Math.PI * r;
+  const filled = Math.min(pct / 100, 1) * circ;
+  const color = pct > 90 ? "#f43f5e" : pct > 70 ? "#fbbf24" : "#34d399";
+  return (
+    <div style={{display:"flex",justifyContent:"center",margin:"4px 0 0"}}>
+      <svg viewBox="0 0 120 68" width="160" height="90">
+        <path d="M 10 62 A 50 50 0 0 1 110 62" fill="none" stroke="rgba(255,255,255,.08)" strokeWidth="12" strokeLinecap="round"/>
+        <path d="M 10 62 A 50 50 0 0 1 110 62" fill="none" stroke={color} strokeWidth="12" strokeLinecap="round"
+          strokeDasharray={`${filled} ${circ}`}/>
+        <text x="60" y="54" textAnchor="middle" fill="#fff" fontSize="20" fontWeight="800">{Math.round(pct)}%</text>
+        <text x="60" y="66" textAnchor="middle" fill="rgba(255,255,255,.35)" fontSize="8">del sueldo gastado</text>
+      </svg>
     </div>
   );
 }
@@ -1578,6 +1667,26 @@ const CSS = `
   .cat-btn:active { opacity:.7; }
   .cat-btn-label { font-size:9px; font-weight:600; color:var(--muted); text-align:center; line-height:1.2; }
   .cat-btn.sel .cat-btn-label { color:var(--cc); }
+
+  /* ── Offline banner ── */
+  .offline-banner { background:#f43f5e; color:#fff; font-size:12px; font-weight:600; text-align:center; padding:6px 16px; flex-shrink:0; }
+
+  /* ── Resumen semanal ── */
+  .sem-card   { background:var(--card); border:1px solid var(--border); border-radius:var(--r-sm); padding:16px; margin:0 0 14px; }
+  .sem-titulo { font-size:11px; font-weight:700; color:var(--muted); text-transform:uppercase; letter-spacing:.6px; margin-bottom:12px; }
+  .sem-row    { display:flex; align-items:center; gap:8px; }
+  .sem-col    { flex:1; }
+  .sem-label  { font-size:10px; color:var(--muted); font-weight:600; margin-bottom:3px; }
+  .sem-monto  { font-size:17px; font-weight:800; letter-spacing:-.5px; }
+  .sem-cant   { font-size:10px; color:var(--muted); margin-top:1px; }
+  .sem-div    { width:1px; height:40px; background:var(--border); }
+  .sem-diff   { font-size:15px; font-weight:800; text-align:center; min-width:52px; }
+
+  /* ── Notas período ── */
+  .nota-periodo { margin-bottom:14px; }
+  .nota-input   { width:100%; background:var(--card); border:1.5px solid var(--border); border-radius:var(--r-sm); padding:12px 15px; font-size:13px; color:var(--text); resize:none; line-height:1.5; }
+  .nota-input:focus { border-color:var(--accent); outline:none; }
+  .nota-input::placeholder { color:var(--muted); }
 
   /* ── Toggle pill ── */
   .toggle-row  { display:flex; justify-content:space-between; align-items:center; padding:4px 0; }
