@@ -863,18 +863,18 @@ const CSS = `
   .main-col { flex:1; min-width:0; display:flex; flex-direction:column; height:100dvh; }
 
   /* ── Top bar ── */
-  .topbar { flex-shrink:0; display:flex; align-items:center; justify-content:space-between; padding:14px 20px 10px; gap:8px; transition:background .3s; position:relative; z-index:10; }
+  .topbar { flex-shrink:0; display:flex; align-items:center; justify-content:space-between; padding:calc(env(safe-area-inset-top,0px) + 12px) 16px 12px; gap:8px; transition:background .3s; position:relative; z-index:10; }
   .topbar-home { background:transparent; }
   .brand { display:flex; align-items:center; gap:8px; flex:1; justify-content:center; }
   .logo  { width:32px; height:32px; border-radius:10px; background:var(--grad); display:flex; align-items:center; justify-content:center; font-size:17px; flex-shrink:0; }
   .app-name { font-size:18px; font-weight:700; letter-spacing:-.4px; }
   .saving-txt { font-size:11px; color:var(--muted); }
-  .icon-btn { width:36px; height:36px; border-radius:50%; background:rgba(255,255,255,.07); border:1px solid var(--border); display:flex; align-items:center; justify-content:center; font-size:16px; flex-shrink:0; }
+  .icon-btn { width:44px; height:44px; border-radius:50%; background:rgba(255,255,255,.07); border:1px solid var(--border); display:flex; align-items:center; justify-content:center; font-size:18px; flex-shrink:0; }
   .icon-btn:active { opacity:.6; }
 
   /* ── Hamburger — solo en mobile ── */
-  .ham-btn { width:36px; height:36px; border-radius:50%; background:rgba(255,255,255,.07); border:1px solid var(--border); display:flex; flex-direction:column; align-items:center; justify-content:center; gap:4.5px; flex-shrink:0; }
-  .ham-btn span { display:block; width:16px; height:2px; background:var(--text); border-radius:99px; }
+  .ham-btn { width:44px; height:44px; border-radius:50%; background:rgba(255,255,255,.07); border:1px solid var(--border); display:flex; flex-direction:column; align-items:center; justify-content:center; gap:5px; flex-shrink:0; }
+  .ham-btn span { display:block; width:18px; height:2px; background:var(--text); border-radius:99px; }
   .ham-btn:active { opacity:.6; }
 
   /* ── Drawer / Sidebar ── */
@@ -955,7 +955,7 @@ const CSS = `
 
   /* ── Nav período ── */
   .nav-mes    { display:flex; align-items:center; justify-content:space-between; padding:12px 0 14px; }
-  .flecha-btn { width:38px; height:38px; border-radius:50%; background:var(--card); border:1px solid var(--border); display:flex; align-items:center; justify-content:center; font-size:20px; }
+  .flecha-btn { width:44px; height:44px; border-radius:50%; background:var(--card); border:1px solid var(--border); display:flex; align-items:center; justify-content:center; font-size:22px; }
   .flecha-btn:active { opacity:.6; }
   .mes-nombre { font-size:16px; font-weight:700; letter-spacing:-.4px; text-transform:capitalize; text-align:center; }
 
