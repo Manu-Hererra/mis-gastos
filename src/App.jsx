@@ -152,12 +152,13 @@ const getCat   = id => CATS.find(c=>c.id===id)   ?? CATS[CATS.length-1];
 const getMedio = id => MEDIOS.find(m=>m.id===id) ?? MEDIOS[0];
 
 const NAV_ITEMS = [
-  { id:"home",     icon:"🏠", label:"Inicio"         },
-  { id:"gastos",   icon:"💸", label:"Gastos del mes"  },
-  { id:"fijos",    icon:"🔁", label:"Gastos fijos"    },
-  { id:"medios",   icon:"💳", label:"Medios de pago"  },
-  { id:"analisis", icon:"📊", label:"Análisis"        },
-  { id:"metas",    icon:"🎯", label:"Metas de ahorro" },
+  { id:"home",        icon:"🏠", label:"Inicio"          },
+  { id:"gastos",      icon:"💸", label:"Gastos del mes"   },
+  { id:"fijos",       icon:"🔁", label:"Gastos fijos"     },
+  { id:"medios",      icon:"💳", label:"Medios de pago"   },
+  { id:"analisis",    icon:"📊", label:"Análisis"         },
+  { id:"metas",       icon:"🎯", label:"Metas de ahorro"  },
+  { id:"inversiones", icon:"💼", label:"Inversiones"      },
 ];
 
 // ─── App ──────────────────────────────────────────────────────────────────────
@@ -170,6 +171,9 @@ export default function App() {
   const [fijos,          setFijos]          = useState([]);
   const [metas,          setMetas]          = useState([]);
   const [contribuciones, setContribuciones] = useState([]);
+  const [inversiones,    setInversiones]    = useState([]);
+  const [cotizaciones,   setCotizaciones]   = useState([]);
+  const [loadingCot,     setLoadingCot]     = useState(false);
   const [dolar,          setDolar]          = useState(null);
   const [online,         setOnline]         = useState(navigator.onLine);
   const [modal,          setModal]          = useState(null);
@@ -193,14 +197,17 @@ export default function App() {
   function navTo(id) { setTab(id); setDrawer(false); }
 
   async function recargar() {
-    const [exp, fix, met, con] = await Promise.all([
-      dbGet("expenses",              { col:"date",       asc:false }),
-      dbGet("fixed_expenses",        { col:"created_at", asc:true  }),
-      dbGet("savings_goals",         { col:"created_at", asc:true  }),
-      dbGet("savings_contributions", { col:"date",        asc:false }),
+    const [exp, fix, met, con, inv, cot] = await Promise.all([
+      dbGet("expenses",              { col:"date",          asc:false }),
+      dbGet("fixed_expenses",        { col:"created_at",    asc:true  }),
+      dbGet("savings_goals",         { col:"created_at",    asc:true  }),
+      dbGet("savings_contributions", { col:"date",          asc:false }),
+      dbGet("inversiones",           { col:"fecha_compra",  asc:true  }),
+      dbGet("cotizaciones_cache",    { col:"updated_at",    asc:false }),
     ]);
     setGastos(exp); setFijos(fix); setMetas(met); setContribuciones(con);
-    return { exp, fix, met, con };
+    setInversiones(inv); setCotizaciones(cot);
+    return { exp, fix, met, con, inv, cot };
   }
 
   useEffect(()=>{
@@ -372,6 +379,7 @@ export default function App() {
         name: data.name,
         target_amount: Number(data.target_amount),
         target_date: data.target_date || null,
+        moneda: data.moneda || "ARS",
       }]);
       await recargar(); cerrarModal();
     } catch(e){ alert("Error: " + e.message); }
@@ -401,6 +409,70 @@ export default function App() {
     setSaving(false);
   }
 
+  // ─── Inversiones ─────────────────────────────────────────────────────────────
+  async function fetchPrecioYahoo(ticker) {
+    const yahooUrl = `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(ticker)}?interval=1d&range=1d`;
+    for (const url of [`https://corsproxy.io/?${encodeURIComponent(yahooUrl)}`, yahooUrl]) {
+      try {
+        const r = await fetch(url);
+        if (!r.ok) continue;
+        const d = await r.json();
+        const result = d?.chart?.result?.[0];
+        if (!result?.meta?.regularMarketPrice) continue;
+        return { precio: result.meta.regularMarketPrice, moneda: result.meta.currency || "USD" };
+      } catch {}
+    }
+    return null;
+  }
+
+  async function actualizarCotizaciones() {
+    setLoadingCot(true);
+    try {
+      const EFECTIVO_TICKERS = ["EFECTIVO_ARS","EFECTIVO_USD"];
+      const activos = [...new Set(inversiones.map(i=>i.activo))].filter(a=>!EFECTIVO_TICKERS.includes(a));
+      const rows = [];
+      for (const activo of activos) {
+        const res = await fetchPrecioYahoo(activo);
+        if (res) rows.push({ activo, precio_actual: res.precio, moneda: res.moneda, updated_at: new Date().toISOString() });
+      }
+      if (rows.length > 0) await dbUpsert("cotizaciones_cache", rows);
+      await recargar();
+    } catch(e) { alert("Error al actualizar cotizaciones: " + e.message); }
+    setLoadingCot(false);
+  }
+
+  async function guardarInversion(data) {
+    setSaving(true);
+    try {
+      const esEfectivo = data.tipo === "efectivo";
+      const activo = esEfectivo
+        ? (data.moneda_efectivo === "USD" ? "EFECTIVO_USD" : "EFECTIVO_ARS")
+        : data.activo.toUpperCase().trim();
+      // Para efectivo, si ya existe un registro del mismo tipo lo reemplazamos
+      let id = editing?.id;
+      if (esEfectivo && !id) {
+        const existente = inversiones.find(i=>i.activo===activo);
+        id = existente?.id;
+      }
+      await dbUpsert("inversiones", [{
+        id: id || uid(),
+        activo,
+        cantidad: Number(data.cantidad),
+        precio_compra: 1,
+        fecha_compra: data.fecha_compra || todayStr(),
+      }]);
+      await recargar(); cerrarModal();
+    } catch(e) { alert("Error: " + e.message); }
+    setSaving(false);
+  }
+
+  async function eliminarInversion(id) {
+    setSaving(true);
+    try { await dbDelete("inversiones", id); await recargar(); cerrarModal(); }
+    catch(e) { alert(e.message); }
+    setSaving(false);
+  }
+
   function abrirModal(tipo, item=null) { setEditing(item); setModal(tipo); }
   function cerrarModal()               { setModal(null); setEditing(null); }
 
@@ -408,6 +480,19 @@ export default function App() {
 
   const gastosMesActual = gastos.filter(e=>dateToMonth(e.date)===currentMonth());
   const totalMesActual  = gastosMesActual.reduce((s,e)=>s+Number(e.amount),0);
+
+  // Valor total de la cartera en ARS (cotizaciones si hay, sino costo)
+  const _cotMap = Object.fromEntries(cotizaciones.map(c=>[c.activo,c]));
+  const valorCartera = inversiones.reduce((sum,inv)=>{
+    const esARS = inv.activo.toUpperCase().endsWith(".BA");
+    const cot   = _cotMap[inv.activo];
+    if (cot?.precio_actual) {
+      const precio = cot.moneda==="USD" ? cot.precio_actual*(dolar?.mep||0) : cot.precio_actual;
+      return sum + precio * Number(inv.cantidad);
+    }
+    const precio = esARS ? Number(inv.precio_compra) : Number(inv.precio_compra)*(dolar?.mep||0);
+    return sum + precio * Number(inv.cantidad);
+  }, 0);
 
   return (
     <>
@@ -464,12 +549,13 @@ export default function App() {
           </header>
 
           <div className="content">
-            {tab==="home"     && <HomeTab gastosMes={gastosMesActual} todosGastos={gastos} totalMes={totalMesActual} sueldo={sueldo} fijos={fijos} onNavTo={navTo} onAgregar={()=>abrirModal("gasto")}/>}
-            {tab==="gastos"   && <GastosTab gastos={gastosPeriodo} label={labelPeriod} total={totalPeriodo} vista={vista} diaClose={diaClose} esActual={esActual} onPrev={irPrev} onNext={irNext} onCambiarVista={cambiarVista} onAgregar={()=>abrirModal("gasto")} onEditar={e=>abrirModal("gasto",e)}/>}
-            {tab==="fijos"    && <FijosTab fijos={fijos} onAgregar={()=>abrirModal("fijo")} onEditar={f=>abrirModal("fijo",f)}/>}
-            {tab==="medios"   && <MediosTab gastos={gastosPeriodo} total={totalPeriodo} label={labelPeriod} esActual={esActual} onPrev={irPrev} onNext={irNext}/>}
-            {tab==="analisis" && <AnalisisTab gastos={gastosPeriodo} todosGastos={gastos} total={totalPeriodo} label={labelPeriod} sueldo={sueldo} esActual={esActual} onPrev={irPrev} onNext={irNext} onEditarSueldo={()=>abrirModal("settings")} dolar={dolar} diaClose={diaClose} period={period} vista={vista}/>}
-            {tab==="metas"    && <MetasTab metas={metas} contribuciones={contribuciones} saving={saving} onNuevaMeta={()=>abrirModal("meta")} onEditarMeta={m=>abrirModal("meta",m)} onEliminarMeta={id=>eliminarMeta(id)} onAgregarAporte={m=>abrirModal("contribucion",m)} onEliminarAporte={id=>eliminarContribucion(id)}/>}
+            {tab==="home"        && <HomeTab gastosMes={gastosMesActual} todosGastos={gastos} totalMes={totalMesActual} sueldo={sueldo} fijos={fijos} valorCartera={valorCartera} onNavTo={navTo} onAgregar={()=>abrirModal("gasto")}/>}
+            {tab==="gastos"      && <GastosTab gastos={gastosPeriodo} label={labelPeriod} total={totalPeriodo} vista={vista} diaClose={diaClose} esActual={esActual} onPrev={irPrev} onNext={irNext} onCambiarVista={cambiarVista} onAgregar={()=>abrirModal("gasto")} onEditar={e=>abrirModal("gasto",e)}/>}
+            {tab==="fijos"       && <FijosTab fijos={fijos} onAgregar={()=>abrirModal("fijo")} onEditar={f=>abrirModal("fijo",f)}/>}
+            {tab==="medios"      && <MediosTab gastos={gastosPeriodo} total={totalPeriodo} label={labelPeriod} esActual={esActual} onPrev={irPrev} onNext={irNext}/>}
+            {tab==="analisis"    && <AnalisisTab gastos={gastosPeriodo} todosGastos={gastos} total={totalPeriodo} label={labelPeriod} sueldo={sueldo} esActual={esActual} onPrev={irPrev} onNext={irNext} onEditarSueldo={()=>abrirModal("settings")} dolar={dolar} diaClose={diaClose} period={period} vista={vista}/>}
+            {tab==="metas"       && <MetasTab metas={metas} contribuciones={contribuciones} saving={saving} inversiones={inversiones} cotizaciones={cotizaciones} dolar={dolar} onNuevaMeta={()=>abrirModal("meta")} onEditarMeta={m=>abrirModal("meta",m)} onEliminarMeta={id=>eliminarMeta(id)} onAgregarAporte={m=>abrirModal("contribucion",m)} onEliminarAporte={id=>eliminarContribucion(id)}/>}
+            {tab==="inversiones" && <InversionesTab inversiones={inversiones} cotizaciones={cotizaciones} dolar={dolar} loadingCot={loadingCot} onActualizar={actualizarCotizaciones} onAgregar={()=>abrirModal("inversion")} onEditar={i=>abrirModal("inversion",i)}/>}
           </div>
         </div>
       </div>
@@ -479,12 +565,13 @@ export default function App() {
       {modal==="meta"         && <MetaModal         meta={editing}   saving={saving} onGuardar={guardarMeta}        onEliminar={editing?()=>eliminarMeta(editing.id):null}    onCerrar={cerrarModal}/>}
       {modal==="contribucion" && <ContribucionModal meta={editing}   saving={saving} onGuardar={guardarContribucion}                                                           onCerrar={cerrarModal}/>}
       {modal==="settings"     && <SettingsModal settings={settings} onGuardar={guardarSettings} onCerrar={cerrarModal}/>}
+      {modal==="inversion"    && <InversionModal inversion={editing} saving={saving} onGuardar={guardarInversion} onEliminar={editing?()=>eliminarInversion(editing.id):null} onCerrar={cerrarModal}/>}
     </>
   );
 }
 
 // ─── Home ─────────────────────────────────────────────────────────────────────
-function HomeTab({ gastosMes, todosGastos, totalMes, sueldo, fijos, onNavTo, onAgregar }) {
+function HomeTab({ gastosMes, todosGastos, totalMes, sueldo, fijos, valorCartera, onNavTo, onAgregar }) {
   const [saludo, icono] = greeting();
   const ahorro   = sueldo - totalMes;
   const pctGasto = sueldo > 0 ? Math.min(100,(totalMes/sueldo)*100) : 0;
@@ -622,6 +709,29 @@ function HomeTab({ gastosMes, todosGastos, totalMes, sueldo, fijos, onNavTo, onA
         </>
       )}
 
+
+      {/* Patrimonio total */}
+      {valorCartera > 0 && (
+        <>
+          <div className="home-section-title">Patrimonio</div>
+          <div className="lista-card" style={{marginBottom:20}}>
+            <div className="patrimonio-fila">
+              <span>💸 Gastos del mes</span>
+              <span style={{color:"var(--danger)",fontWeight:700}}>-{formatARS(totalMes)}</span>
+            </div>
+            <div className="patrimonio-fila">
+              <span>💼 Cartera de inversiones</span>
+              <span style={{color:"var(--success)",fontWeight:700}}>{formatARS(valorCartera)}</span>
+            </div>
+            {sueldo > 0 && (
+              <div className="patrimonio-fila" style={{borderTop:"1px solid var(--border)",fontWeight:700}}>
+                <span>Patrimonio estimado</span>
+                <span style={{color:"var(--accent2)"}}>{formatARS(sueldo - totalMes + valorCartera)}</span>
+              </div>
+            )}
+          </div>
+        </>
+      )}
 
       {gastosMes.length===0 && (
         <div className="vacio" style={{paddingTop:20}}>
@@ -1224,17 +1334,86 @@ function Velocimetro({ pct }) {
 }
 
 // ─── Metas de ahorro ─────────────────────────────────────────────────────────
-function MetasTab({ metas, contribuciones, saving, onNuevaMeta, onEditarMeta, onEliminarMeta, onAgregarAporte, onEliminarAporte }) {
+function MetasTab({ metas, contribuciones, saving, inversiones, cotizaciones, dolar, onNuevaMeta, onEditarMeta, onEliminarMeta, onAgregarAporte, onEliminarAporte }) {
+  // Cálculo de patrimonio total
+  const cotMap = Object.fromEntries((cotizaciones||[]).map(c=>[c.activo,c]));
+  const mep = dolar?.mep || 0;
+  const totalPatrimonioARS = (inversiones||[]).reduce((sum,inv)=>{
+    if (inv.activo==="EFECTIVO_ARS") return sum + Number(inv.cantidad);
+    if (inv.activo==="EFECTIVO_USD") return sum + Number(inv.cantidad)*mep;
+    const esBA = inv.activo.toUpperCase().endsWith(".BA");
+    const cot  = cotMap[inv.activo];
+    if (cot?.precio_actual) {
+      const precio = cot.moneda==="USD" ? cot.precio_actual*mep : cot.precio_actual;
+      return sum + precio*Number(inv.cantidad);
+    }
+    const precio = esBA ? Number(inv.precio_compra) : Number(inv.precio_compra)*mep;
+    return sum + precio*Number(inv.cantidad);
+  }, 0);
+  const totalPatrimonioUSD = mep>0 ? totalPatrimonioARS/mep : 0;
+
+  // Breakdown por tipo
+  const efectivoARS = (inversiones||[]).filter(i=>i.activo==="EFECTIVO_ARS").reduce((s,i)=>s+Number(i.cantidad),0);
+  const efectivoUSD = (inversiones||[]).filter(i=>i.activo==="EFECTIVO_USD").reduce((s,i)=>s+Number(i.cantidad),0);
+  const carteraARS  = totalPatrimonioARS - efectivoARS - efectivoUSD*mep;
+
   return (
     <>
       <div className="page-title">Metas de ahorro</div>
+
+      {/* Patrimonio total */}
+      {(inversiones||[]).length>0 && (
+        <div className="analysis-card" style={{marginBottom:18}}>
+          <div className="card-titulo">💰 Mi Patrimonio</div>
+          <div className="patrimonio-total-row">
+            <div>
+              <div style={{fontSize:11,color:"var(--muted)"}}>Total en ARS</div>
+              <div style={{fontSize:28,fontWeight:800,letterSpacing:-1,background:"var(--grad)",WebkitBackgroundClip:"text",WebkitTextFillColor:"transparent",backgroundClip:"text"}}>{formatARS(totalPatrimonioARS)}</div>
+            </div>
+            {mep>0 && (
+              <div style={{textAlign:"right"}}>
+                <div style={{fontSize:11,color:"var(--muted)"}}>Total en USD</div>
+                <div style={{fontSize:22,fontWeight:800,letterSpacing:-.5,color:"var(--success)"}}>
+                  USD {totalPatrimonioUSD.toLocaleString("es-AR",{maximumFractionDigits:0})}
+                </div>
+              </div>
+            )}
+          </div>
+          <div style={{marginTop:14,display:"flex",flexDirection:"column",gap:6}}>
+            {carteraARS>0 && (
+              <div className="patrimonio-breakdown-fila">
+                <span>💼 Cartera de inversiones</span>
+                <span>{formatARS(carteraARS)}</span>
+              </div>
+            )}
+            {efectivoARS>0 && (
+              <div className="patrimonio-breakdown-fila">
+                <span>💵 Efectivo ARS</span>
+                <span>{formatARS(efectivoARS)}</span>
+              </div>
+            )}
+            {efectivoUSD>0 && (
+              <div className="patrimonio-breakdown-fila">
+                <span>💵 Efectivo USD</span>
+                <span>USD {efectivoUSD.toLocaleString("es-AR",{maximumFractionDigits:0})}{mep>0?` = ${formatARS(efectivoUSD*mep)}`:""}</span>
+              </div>
+            )}
+          </div>
+        </div>
+      )}
       {metas.length === 0
         ? <Vacio icon="🎯" titulo="Sin metas" sub="Tocá + para crear tu primera meta"/>
         : metas.map(meta => {
-          const aportado = contribuciones.filter(c=>c.goal_id===meta.id).reduce((s,c)=>s+Number(c.amount),0);
-          const pct = meta.target_amount > 0 ? Math.min(100,(aportado/meta.target_amount)*100) : 0;
-          const contribs = contribuciones.filter(c=>c.goal_id===meta.id);
-          const cumplida = aportado >= Number(meta.target_amount);
+          const monedaMeta  = meta.moneda || "ARS";
+          const esUSD       = monedaMeta === "USD";
+          const target      = Number(meta.target_amount);
+          // Progreso = patrimonio total en la moneda de la meta
+          const progreso    = esUSD ? totalPatrimonioUSD : totalPatrimonioARS;
+          const pct         = target > 0 ? Math.min(100,(progreso/target)*100) : 0;
+          const cumplida    = progreso >= target;
+          // Equivalente en la otra moneda
+          const equivTarget = esUSD ? (mep>0?target*mep:null) : (mep>0?target/mep:null);
+          const equivProg   = esUSD ? (mep>0?progreso*mep:null) : (mep>0?progreso/mep:null);
           return (
             <div key={meta.id} className="meta-card">
               <div className="meta-header">
@@ -1248,29 +1427,31 @@ function MetasTab({ metas, contribuciones, saving, onNuevaMeta, onEditarMeta, on
                 </div>
                 <button className="icon-btn-sm" onClick={()=>onEditarMeta(meta)}>✏️</button>
               </div>
+
+              {/* Progreso principal */}
               <div className="meta-progress-label">
-                <span style={{fontWeight:800,fontSize:20}}>{formatARS(aportado)}</span>
-                <span className="meta-de-label"> de {formatARS(meta.target_amount)}</span>
+                <span style={{fontWeight:800,fontSize:20}}>
+                  {esUSD ? `USD ${progreso.toLocaleString("es-AR",{maximumFractionDigits:0})}` : formatARS(progreso)}
+                </span>
+                <span className="meta-de-label">
+                  {" "}de {esUSD ? `USD ${target.toLocaleString("es-AR",{maximumFractionDigits:0})}` : formatARS(target)}
+                </span>
                 <span className="meta-pct">{pct.toFixed(0)}%</span>
               </div>
+
+              {/* Equivalente en la otra moneda */}
+              {equivTarget!==null && (
+                <div style={{fontSize:12,color:"var(--muted)",marginTop:4}}>
+                  {esUSD
+                    ? `≈ ${formatARS(equivProg??0)} de ${formatARS(equivTarget)} al MEP`
+                    : `≈ USD ${(equivProg??0).toLocaleString("es-AR",{maximumFractionDigits:0})} de USD ${equivTarget.toLocaleString("es-AR",{maximumFractionDigits:0})} al MEP`
+                  }
+                </div>
+              )}
+
               <div className="barra-track" style={{height:10,marginTop:10,marginBottom:4}}>
                 <div className="barra-fill" style={{width:`${pct}%`,background:cumplida?"var(--success)":pct>=70?"var(--warn)":"var(--grad)"}}/>
               </div>
-              {contribs.length > 0 && (
-                <div className="meta-contribs">
-                  {contribs.map(c=>(
-                    <div key={c.id} className="meta-contrib-fila">
-                      <span className="meta-contrib-fecha">{dateLabel(c.date)}</span>
-                      {c.note && <span className="meta-contrib-nota">{c.note}</span>}
-                      <span className="meta-contrib-monto">+{formatARS(c.amount)}</span>
-                      <button className="meta-contrib-del" onClick={()=>onEliminarAporte(c.id)}>✕</button>
-                    </div>
-                  ))}
-                </div>
-              )}
-              <button className="btn-aporte" onClick={()=>onAgregarAporte(meta)} disabled={saving}>
-                + Agregar aporte
-              </button>
             </div>
           );
         })
@@ -1407,10 +1588,18 @@ function MetaModal({ meta, saving, onGuardar, onEliminar, onCerrar }) {
     name:          meta?.name || "",
     target_amount: meta?.target_amount ? String(meta.target_amount) : "",
     target_date:   meta?.target_date || "",
+    moneda:        meta?.moneda || "ARS",
   });
   const set    = (k,v) => setForm(f=>({...f,[k]:v}));
-  const numStr = form.target_amount.replace(/\D/g,"");
-  const display= numStr ? new Intl.NumberFormat("es-AR").format(Number(numStr)) : "";
+  const esUSD  = form.moneda === "USD";
+
+  // Para ARS: solo enteros formateados. Para USD: decimales libres.
+  const rawAmt      = form.target_amount;
+  const numStrARS   = rawAmt.replace(/\D/g,"");
+  const displayARS  = numStrARS ? new Intl.NumberFormat("es-AR").format(Number(numStrARS)) : "";
+  const valido      = esUSD ? !!rawAmt && !isNaN(parseFloat(rawAmt)) && parseFloat(rawAmt)>0
+                            : !!numStrARS;
+  const amountFinal = esUSD ? rawAmt : numStrARS;
 
   return (
     <Modal titulo={meta?"Editar meta":"Nueva meta de ahorro"} onCerrar={onCerrar}>
@@ -1418,16 +1607,42 @@ function MetaModal({ meta, saving, onGuardar, onEliminar, onCerrar }) {
         <input type="text" placeholder="Ej: Viaje a Europa, Fondo de emergencia…"
           value={form.name} onChange={e=>set("name",e.target.value)}/>
       </Campo>
-      <Campo label="Monto objetivo">
-        <input className="input-monto" type="text" inputMode="numeric" placeholder="$ 0"
-          value={display?`$ ${display}`:""}
-          onChange={e=>set("target_amount",e.target.value.replace(/\D/g,""))}/>
+
+      {/* Selector de moneda */}
+      <Campo label="Moneda de la meta">
+        <div style={{display:"flex",gap:8}}>
+          {["ARS","USD"].map(m=>(
+            <button key={m} type="button"
+              style={{
+                flex:1, padding:"10px 0", borderRadius:"var(--radius)",
+                border:`2px solid ${form.moneda===m?"var(--accent)":"var(--border)"}`,
+                background:form.moneda===m?"var(--accent)":"var(--card)",
+                color:form.moneda===m?"#fff":"var(--text)",
+                fontWeight:700, cursor:"pointer", fontSize:15,
+              }}
+              onClick={()=>{set("moneda",m); set("target_amount","");}}>
+              {m==="ARS"?"$ ARS":"USD"}
+            </button>
+          ))}
+        </div>
       </Campo>
+
+      <Campo label={`Monto objetivo (${form.moneda})`}>
+        {esUSD
+          ? <input className="input-monto" type="number" inputMode="decimal" placeholder="USD 0"
+              value={rawAmt}
+              onChange={e=>set("target_amount",e.target.value)}/>
+          : <input className="input-monto" type="text" inputMode="numeric" placeholder="$ 0"
+              value={displayARS?`$ ${displayARS}`:""}
+              onChange={e=>set("target_amount",e.target.value.replace(/\D/g,""))}/>
+        }
+      </Campo>
+
       <Campo label="Fecha objetivo (opcional)">
         <input type="date" value={form.target_date} onChange={e=>set("target_date",e.target.value)}/>
       </Campo>
-      <button className="btn-primario" disabled={!form.name||!numStr||saving}
-        onClick={()=>onGuardar({...form,target_amount:numStr})}>
+      <button className="btn-primario" disabled={!form.name||!valido||saving}
+        onClick={()=>onGuardar({...form,target_amount:amountFinal})}>
         {saving?"Guardando…":meta?"Guardar cambios":"Crear meta"}
       </button>
       {onEliminar && <button className="btn-peligro" onClick={onEliminar} disabled={saving}>Eliminar meta</button>}
@@ -1540,6 +1755,264 @@ function PickerMedio({ value, onChange }) {
         </button>
       ))}
     </div>
+  );
+}
+
+// ─── Inversiones ─────────────────────────────────────────────────────────────
+const EFECTIVO_TICKERS = ["EFECTIVO_ARS","EFECTIVO_USD"];
+
+function InversionesTab({ inversiones, cotizaciones, dolar, loadingCot, onActualizar, onAgregar, onEditar }) {
+  const esARS    = (activo) => activo.toUpperCase().endsWith(".BA");
+  const cotMap   = Object.fromEntries(cotizaciones.map(c=>[c.activo,c]));
+  const aARS     = (precio, moneda) => moneda==="USD" ? precio*(dolar?.mep||0) : precio;
+  const mep      = dolar?.mep || 0;
+
+  // Separar efectivo de activos de mercado
+  const invEfectivo = inversiones.filter(i=>EFECTIVO_TICKERS.includes(i.activo));
+  const invActivos  = inversiones.filter(i=>!EFECTIVO_TICKERS.includes(i.activo));
+  const efectivoARS = invEfectivo.filter(i=>i.activo==="EFECTIVO_ARS").reduce((s,i)=>s+Number(i.cantidad),0);
+  const efectivoUSD = invEfectivo.filter(i=>i.activo==="EFECTIVO_USD").reduce((s,i)=>s+Number(i.cantidad),0);
+  const efectivoTotalARS = efectivoARS + efectivoUSD*mep;
+
+  // Agrupar activos de mercado por ticker
+  const activosMap = {};
+  invActivos.forEach(inv=>{
+    if (!activosMap[inv.activo]) activosMap[inv.activo]=[];
+    activosMap[inv.activo].push(inv);
+  });
+  const posiciones = Object.entries(activosMap).map(([activo,lotes])=>{
+    const moneda       = esARS(activo) ? "ARS" : "USD";
+    const cantTotal    = lotes.reduce((s,l)=>s+Number(l.cantidad),0);
+    const costoNativo  = lotes.reduce((s,l)=>s+Number(l.cantidad)*Number(l.precio_compra),0);
+    const precioPromedio = costoNativo/cantTotal;
+    const cot          = cotMap[activo];
+    const costoARS     = aARS(costoNativo, moneda);
+    const valorActualARS = cot?.precio_actual ? aARS(cot.precio_actual*cantTotal, cot.moneda||moneda) : null;
+    const gananciaARS  = valorActualARS!==null ? valorActualARS-costoARS : null;
+    const gananciaPct  = gananciaARS!==null && costoARS>0 ? (gananciaARS/costoARS)*100 : null;
+    return { activo, moneda, cantTotal, costoNativo, precioPromedio, cot, costoARS, valorActualARS, gananciaARS, gananciaPct, lotes };
+  }).sort((a,b)=>(b.valorActualARS??b.costoARS)-(a.valorActualARS??a.costoARS));
+
+  const valorTotal  = posiciones.reduce((s,p)=>s+(p.valorActualARS??p.costoARS),0);
+  const costoTotal  = posiciones.reduce((s,p)=>s+p.costoARS,0);
+  const ganTotal    = posiciones.filter(p=>p.gananciaARS!==null).reduce((s,p)=>s+p.gananciaARS,0);
+  const ganTotalPct = costoTotal>0?(ganTotal/costoTotal)*100:0;
+  const hayCot      = posiciones.some(p=>p.valorActualARS!==null);
+
+  const lastUpd = cotizaciones.length>0
+    ? cotizaciones.reduce((mx,c)=>c.updated_at>mx?c.updated_at:mx, cotizaciones[0].updated_at) : null;
+  const lastLabel = lastUpd
+    ? new Date(lastUpd).toLocaleTimeString("es-AR",{hour:"2-digit",minute:"2-digit"}) : null;
+
+  return (
+    <>
+      <div className="page-title">Mi Cartera</div>
+
+      {/* Resumen general */}
+      {posiciones.length>0 && (
+        <div className="hero-card">
+          <div className="hero-label">Valor total de la cartera</div>
+          <div className="hero-amount">{formatARS(valorTotal)}</div>
+          {hayCot && (
+            <div style={{display:"flex",gap:20,marginTop:12}}>
+              <div>
+                <div style={{fontSize:11,color:"var(--muted)"}}>Invertido</div>
+                <div style={{fontSize:15,fontWeight:700}}>{formatARS(costoTotal)}</div>
+              </div>
+              <div>
+                <div style={{fontSize:11,color:"var(--muted)"}}>Resultado</div>
+                <div style={{fontSize:15,fontWeight:700,color:ganTotal>=0?"var(--success)":"var(--danger)"}}>
+                  {ganTotal>=0?"+":""}{formatARS(ganTotal)}{" "}
+                  <span style={{fontSize:11}}>({ganTotalPct>=0?"+":""}{ganTotalPct.toFixed(1)}%)</span>
+                </div>
+              </div>
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* Efectivo */}
+      {(efectivoARS>0||efectivoUSD>0) && (
+        <div className="inv-efectivo-card">
+          <div className="inv-efectivo-titulo">💵 Stock en efectivo</div>
+          {efectivoARS>0 && (
+            <div className="inv-efectivo-fila" onClick={()=>onEditar(invEfectivo.find(i=>i.activo==="EFECTIVO_ARS"))}>
+              <span>Pesos ARS</span>
+              <span style={{fontWeight:700}}>{formatARS(efectivoARS)}</span>
+              <span>✏️</span>
+            </div>
+          )}
+          {efectivoUSD>0 && (
+            <div className="inv-efectivo-fila" onClick={()=>onEditar(invEfectivo.find(i=>i.activo==="EFECTIVO_USD"))}>
+              <span>Dólares USD</span>
+              <span style={{fontWeight:700}}>USD {efectivoUSD.toLocaleString("es-AR",{maximumFractionDigits:0})}{mep>0?` ≈ ${formatARS(efectivoUSD*mep)}`:""}</span>
+              <span>✏️</span>
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* Actualizar cotizaciones */}
+      <div className="inv-refresh-row">
+        <span className="inv-update-txt">
+          {lastLabel ? `Cotizaciones al ${lastLabel}` : "Sin cotizaciones cargadas"}
+        </span>
+        <button className="inv-refresh-btn" onClick={onActualizar} disabled={loadingCot||inversiones.length===0}>
+          {loadingCot?"Actualizando…":"↻ Actualizar"}
+        </button>
+      </div>
+
+      {/* Posiciones */}
+      {posiciones.length===0
+        ? <Vacio icon="💼" titulo="Sin posiciones" sub="Tocá + para cargar tu primera inversión"/>
+        : posiciones.map(p=>{
+          const peso = valorTotal>0?((p.valorActualARS??p.costoARS)/valorTotal*100):0;
+          const signo = p.moneda==="USD"?"USD ":"$";
+          return (
+            <div key={p.activo} className="inv-card">
+              <div className="inv-card-header">
+                <div>
+                  <div className="inv-ticker">{p.activo}</div>
+                  <div className="inv-meta">
+                    {p.cantTotal.toLocaleString("es-AR",{maximumFractionDigits:4})} unidades ·
+                    prom. {signo}{p.precioPromedio.toLocaleString("es-AR",{maximumFractionDigits:2})}
+                  </div>
+                </div>
+                <div style={{textAlign:"right"}}>
+                  <div className="inv-valor">{formatARS(p.valorActualARS??p.costoARS)}</div>
+                  <div className="inv-peso">{peso.toFixed(1)}% de la cartera</div>
+                </div>
+              </div>
+
+              {p.gananciaARS!==null && (
+                <div className="inv-resultado" style={{color:p.gananciaARS>=0?"var(--success)":"var(--danger)"}}>
+                  {p.gananciaARS>=0?"+":""}{formatARS(p.gananciaARS)}{" "}
+                  ({p.gananciaPct>=0?"+":""}{p.gananciaPct.toFixed(1)}%)
+                  <span style={{color:"var(--muted)",fontSize:11,fontWeight:400,marginLeft:6}}>
+                    vs {formatARS(p.costoARS)} invertido
+                  </span>
+                </div>
+              )}
+
+              <div className="barra-track" style={{marginTop:10}}>
+                <div className="barra-fill" style={{
+                  width:`${peso.toFixed(0)}%`,
+                  background:p.gananciaARS===null?"rgba(59,130,246,.4)":p.gananciaARS>=0?"var(--success)":"var(--danger)"
+                }}/>
+              </div>
+
+              {/* Lotes de compra */}
+              {p.lotes.length>0 && (
+                <div className="inv-lotes">
+                  {p.lotes.map(l=>(
+                    <div key={l.id} className="inv-lote" onClick={()=>onEditar(l)}>
+                      <span>{new Date(l.fecha_compra+"T12:00:00").toLocaleDateString("es-AR",{day:"numeric",month:"short",year:"2-digit"})}</span>
+                      <span>{Number(l.cantidad)} u. × {signo}{Number(l.precio_compra).toLocaleString("es-AR",{maximumFractionDigits:2})}</span>
+                      <span>✏️</span>
+                    </div>
+                  ))}
+                </div>
+              )}
+
+              {p.cot && (
+                <div style={{fontSize:11,color:"var(--muted)",marginTop:8,borderTop:"1px solid var(--border)",paddingTop:8}}>
+                  Precio actual: {p.cot.moneda==="USD"?"USD":""} {Number(p.cot.precio_actual).toLocaleString("es-AR",{maximumFractionDigits:2})}
+                  {p.cot.moneda==="USD" && dolar?.mep && (
+                    <span> ≈ {formatARS(p.cot.precio_actual*dolar.mep)} al MEP</span>
+                  )}
+                </div>
+              )}
+            </div>
+          );
+        })
+      }
+
+      <button className="fab" onClick={onAgregar}>+</button>
+    </>
+  );
+}
+
+function InversionModal({ inversion, saving, onGuardar, onEliminar, onCerrar }) {
+  const esEfectivoExistente = inversion && EFECTIVO_TICKERS.includes(inversion.activo);
+  const [tipo, setTipo] = useState(esEfectivoExistente ? "efectivo" : "activo");
+  const [form, setForm] = useState({
+    activo:          esEfectivoExistente ? "" : (inversion?.activo || ""),
+    cantidad:        inversion?.cantidad ? String(inversion.cantidad) : "",
+    precio_compra:   inversion?.precio_compra && !esEfectivoExistente ? String(inversion.precio_compra) : "",
+    fecha_compra:    inversion?.fecha_compra || todayStr(),
+    moneda_efectivo: inversion?.activo==="EFECTIVO_USD" ? "USD" : "ARS",
+  });
+  const set = (k,v) => setForm(f=>({...f,[k]:v}));
+
+  const esActivo  = tipo === "activo";
+  const monedaLabel = form.activo.toUpperCase().endsWith(".BA") ? "ARS" : "USD";
+  const esValido  = esActivo
+    ? (form.activo && Number(form.cantidad)>0 && Number(form.precio_compra)>0)
+    : Number(form.cantidad)>0;
+
+  return (
+    <Modal titulo={inversion?"Editar posición":"Nueva posición"} onCerrar={onCerrar}>
+
+      {/* Selector de tipo — solo al crear nuevo */}
+      {!inversion && (
+        <Campo label="Tipo">
+          <div className="inv-tipo-picker">
+            <button className={`inv-tipo-btn${esActivo?" sel":""}`} onClick={()=>setTipo("activo")}>
+              📈 Activo
+            </button>
+            <button className={`inv-tipo-btn${!esActivo?" sel":""}`} onClick={()=>setTipo("efectivo")}>
+              💵 Efectivo
+            </button>
+          </div>
+        </Campo>
+      )}
+
+      {esActivo ? (
+        <>
+          <Campo label="Ticker">
+            <input type="text" placeholder="Ej: AAPL.BA · GGAL.BA · AL30.BA · GD30"
+              value={form.activo} onChange={e=>set("activo",e.target.value.toUpperCase())}/>
+            <div style={{fontSize:11,color:"var(--muted)",marginTop:6,lineHeight:1.6}}>
+              Sufijo .BA = precio en ARS (CEDEARs, acciones arg., bonos en pesos). Sin sufijo = USD (bonos hard, acciones exterior).
+            </div>
+          </Campo>
+          <Campo label="Cantidad (unidades)">
+            <input type="number" inputMode="decimal" placeholder="Ej: 10"
+              value={form.cantidad} onChange={e=>set("cantidad",e.target.value)}/>
+          </Campo>
+          <Campo label={`Precio de compra (${monedaLabel})`}>
+            <input type="number" inputMode="decimal" placeholder="Ej: 5000"
+              value={form.precio_compra} onChange={e=>set("precio_compra",e.target.value)}/>
+          </Campo>
+          <Campo label="Fecha de compra">
+            <input type="date" value={form.fecha_compra} onChange={e=>set("fecha_compra",e.target.value)}/>
+          </Campo>
+        </>
+      ) : (
+        <>
+          <Campo label="Moneda">
+            <div className="inv-tipo-picker">
+              <button className={`inv-tipo-btn${form.moneda_efectivo==="ARS"?" sel":""}`} onClick={()=>set("moneda_efectivo","ARS")}>
+                🇦🇷 Pesos ARS
+              </button>
+              <button className={`inv-tipo-btn${form.moneda_efectivo==="USD"?" sel":""}`} onClick={()=>set("moneda_efectivo","USD")}>
+                🇺🇸 Dólares USD
+              </button>
+            </div>
+          </Campo>
+          <Campo label={`Monto en ${form.moneda_efectivo}`}>
+            <input type="number" inputMode="decimal" placeholder={form.moneda_efectivo==="ARS"?"Ej: 500000":"Ej: 2000"}
+              value={form.cantidad} onChange={e=>set("cantidad",e.target.value)}/>
+          </Campo>
+        </>
+      )}
+
+      <button className="btn-primario" disabled={!esValido||saving}
+        onClick={()=>onGuardar({...form, tipo})}>
+        {saving?"Guardando…":inversion?"Guardar cambios":"Agregar"}
+      </button>
+      {onEliminar && <button className="btn-peligro" onClick={onEliminar} disabled={saving}>Eliminar</button>}
+    </Modal>
   );
 }
 
@@ -1748,6 +2221,40 @@ const CSS = `
   .cat-row    { padding:11px 0; border-bottom:1px solid rgba(59,130,246,.06); }
   .cat-row:last-child { border-bottom:none; }
   .cat-row-top { display:flex; justify-content:space-between; align-items:center; font-size:14px; }
+
+  /* ── Patrimonio metas ── */
+  .patrimonio-total-row { display:flex; justify-content:space-between; align-items:flex-end; gap:12px; margin-bottom:4px; }
+  .patrimonio-breakdown-fila { display:flex; justify-content:space-between; font-size:13px; color:var(--muted); padding:5px 0; border-top:1px solid rgba(59,130,246,.06); }
+
+  /* ── Inversiones ── */
+  .inv-refresh-row { display:flex; justify-content:space-between; align-items:center; margin-bottom:14px; gap:8px; }
+  .inv-update-txt { font-size:11px; color:var(--muted); }
+  .inv-refresh-btn { padding:8px 16px; border-radius:99px; font-size:12px; font-weight:700; background:rgba(59,130,246,.1); color:var(--accent2); border:1px solid rgba(59,130,246,.2); flex-shrink:0; }
+  .inv-refresh-btn:active { opacity:.7; }
+  .inv-refresh-btn:disabled { opacity:.4; cursor:default; }
+  .inv-card { background:var(--card); border:1px solid var(--border); border-radius:var(--r); padding:18px; margin-bottom:12px; }
+  .inv-card-header { display:flex; justify-content:space-between; align-items:flex-start; gap:10px; margin-bottom:8px; }
+  .inv-ticker { font-size:20px; font-weight:800; letter-spacing:-.5px; }
+  .inv-meta { font-size:11px; color:var(--muted); margin-top:3px; line-height:1.4; }
+  .inv-valor { font-size:18px; font-weight:800; letter-spacing:-.5px; }
+  .inv-peso { font-size:11px; color:var(--muted); margin-top:2px; text-align:right; }
+  .inv-resultado { font-size:13px; font-weight:700; margin-top:8px; }
+  .inv-lotes { border-top:1px solid var(--border); margin-top:12px; padding-top:10px; display:flex; flex-direction:column; gap:6px; }
+  .inv-lote { display:flex; justify-content:space-between; align-items:center; font-size:12px; color:var(--muted); padding:7px 10px; border-radius:8px; background:var(--card2); cursor:pointer; gap:8px; }
+  .inv-lote:active { opacity:.7; }
+  .inv-efectivo-card { background:var(--card); border:1px solid var(--border); border-radius:var(--r-sm); padding:16px; margin-bottom:12px; }
+  .inv-efectivo-titulo { font-size:11px; font-weight:700; color:var(--muted); text-transform:uppercase; letter-spacing:.6px; margin-bottom:12px; }
+  .inv-efectivo-fila { display:flex; justify-content:space-between; align-items:center; font-size:14px; padding:10px 0; border-bottom:1px solid rgba(59,130,246,.06); cursor:pointer; gap:8px; }
+  .inv-efectivo-fila:last-child { border-bottom:none; padding-bottom:0; }
+  .inv-efectivo-fila:active { opacity:.7; }
+  .inv-tipo-picker { display:flex; gap:8px; }
+  .inv-tipo-btn { flex:1; padding:10px 8px; border-radius:var(--r-sm); font-size:13px; font-weight:600; border:1.5px solid var(--border); background:var(--card2); color:var(--muted); transition:all .15s; }
+  .inv-tipo-btn.sel { background:var(--grad); border-color:transparent; color:#fff; }
+  .inv-tipo-btn:active { opacity:.7; }
+
+  /* ── Patrimonio home ── */
+  .patrimonio-fila { display:flex; justify-content:space-between; align-items:center; padding:13px 16px; font-size:14px; border-bottom:1px solid rgba(59,130,246,.06); }
+  .patrimonio-fila:last-child { border-bottom:none; }
 
   /* ── Gastos hormiga ── */
   .hormiga-row { display:flex; align-items:center; gap:12px; padding:10px 0; border-bottom:1px solid rgba(59,130,246,.06); }
