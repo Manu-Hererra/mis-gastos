@@ -427,7 +427,8 @@ export default function App() {
   async function actualizarCotizaciones() {
     setLoadingCot(true);
     try {
-      const activos = [...new Set(inversiones.map(i=>i.activo))];
+      const EFECTIVO_TICKERS = ["EFECTIVO_ARS","EFECTIVO_USD"];
+      const activos = [...new Set(inversiones.map(i=>i.activo))].filter(a=>!EFECTIVO_TICKERS.includes(a));
       const rows = [];
       for (const activo of activos) {
         const res = await fetchPrecioYahoo(activo);
@@ -442,12 +443,22 @@ export default function App() {
   async function guardarInversion(data) {
     setSaving(true);
     try {
+      const esEfectivo = data.tipo === "efectivo";
+      const activo = esEfectivo
+        ? (data.moneda_efectivo === "USD" ? "EFECTIVO_USD" : "EFECTIVO_ARS")
+        : data.activo.toUpperCase().trim();
+      // Para efectivo, si ya existe un registro del mismo tipo lo reemplazamos
+      let id = editing?.id;
+      if (esEfectivo && !id) {
+        const existente = inversiones.find(i=>i.activo===activo);
+        id = existente?.id;
+      }
       await dbUpsert("inversiones", [{
-        id: editing?.id || uid(),
-        activo: data.activo.toUpperCase().trim(),
+        id: id || uid(),
+        activo,
         cantidad: Number(data.cantidad),
-        precio_compra: Number(data.precio_compra),
-        fecha_compra: data.fecha_compra,
+        precio_compra: 1,
+        fecha_compra: data.fecha_compra || todayStr(),
       }]);
       await recargar(); cerrarModal();
     } catch(e) { alert("Error: " + e.message); }
@@ -542,7 +553,7 @@ export default function App() {
             {tab==="fijos"       && <FijosTab fijos={fijos} onAgregar={()=>abrirModal("fijo")} onEditar={f=>abrirModal("fijo",f)}/>}
             {tab==="medios"      && <MediosTab gastos={gastosPeriodo} total={totalPeriodo} label={labelPeriod} esActual={esActual} onPrev={irPrev} onNext={irNext}/>}
             {tab==="analisis"    && <AnalisisTab gastos={gastosPeriodo} todosGastos={gastos} total={totalPeriodo} label={labelPeriod} sueldo={sueldo} esActual={esActual} onPrev={irPrev} onNext={irNext} onEditarSueldo={()=>abrirModal("settings")} dolar={dolar} diaClose={diaClose} period={period} vista={vista}/>}
-            {tab==="metas"       && <MetasTab metas={metas} contribuciones={contribuciones} saving={saving} onNuevaMeta={()=>abrirModal("meta")} onEditarMeta={m=>abrirModal("meta",m)} onEliminarMeta={id=>eliminarMeta(id)} onAgregarAporte={m=>abrirModal("contribucion",m)} onEliminarAporte={id=>eliminarContribucion(id)}/>}
+            {tab==="metas"       && <MetasTab metas={metas} contribuciones={contribuciones} saving={saving} inversiones={inversiones} cotizaciones={cotizaciones} dolar={dolar} onNuevaMeta={()=>abrirModal("meta")} onEditarMeta={m=>abrirModal("meta",m)} onEliminarMeta={id=>eliminarMeta(id)} onAgregarAporte={m=>abrirModal("contribucion",m)} onEliminarAporte={id=>eliminarContribucion(id)}/>}
             {tab==="inversiones" && <InversionesTab inversiones={inversiones} cotizaciones={cotizaciones} dolar={dolar} loadingCot={loadingCot} onActualizar={actualizarCotizaciones} onAgregar={()=>abrirModal("inversion")} onEditar={i=>abrirModal("inversion",i)}/>}
           </div>
         </div>
@@ -1322,10 +1333,73 @@ function Velocimetro({ pct }) {
 }
 
 // ─── Metas de ahorro ─────────────────────────────────────────────────────────
-function MetasTab({ metas, contribuciones, saving, onNuevaMeta, onEditarMeta, onEliminarMeta, onAgregarAporte, onEliminarAporte }) {
+function MetasTab({ metas, contribuciones, saving, inversiones, cotizaciones, dolar, onNuevaMeta, onEditarMeta, onEliminarMeta, onAgregarAporte, onEliminarAporte }) {
+  // Cálculo de patrimonio total
+  const cotMap = Object.fromEntries((cotizaciones||[]).map(c=>[c.activo,c]));
+  const mep = dolar?.mep || 0;
+  const totalPatrimonioARS = (inversiones||[]).reduce((sum,inv)=>{
+    if (inv.activo==="EFECTIVO_ARS") return sum + Number(inv.cantidad);
+    if (inv.activo==="EFECTIVO_USD") return sum + Number(inv.cantidad)*mep;
+    const esBA = inv.activo.toUpperCase().endsWith(".BA");
+    const cot  = cotMap[inv.activo];
+    if (cot?.precio_actual) {
+      const precio = cot.moneda==="USD" ? cot.precio_actual*mep : cot.precio_actual;
+      return sum + precio*Number(inv.cantidad);
+    }
+    const precio = esBA ? Number(inv.precio_compra) : Number(inv.precio_compra)*mep;
+    return sum + precio*Number(inv.cantidad);
+  }, 0);
+  const totalPatrimonioUSD = mep>0 ? totalPatrimonioARS/mep : 0;
+
+  // Breakdown por tipo
+  const efectivoARS = (inversiones||[]).filter(i=>i.activo==="EFECTIVO_ARS").reduce((s,i)=>s+Number(i.cantidad),0);
+  const efectivoUSD = (inversiones||[]).filter(i=>i.activo==="EFECTIVO_USD").reduce((s,i)=>s+Number(i.cantidad),0);
+  const carteraARS  = totalPatrimonioARS - efectivoARS - efectivoUSD*mep;
+
   return (
     <>
       <div className="page-title">Metas de ahorro</div>
+
+      {/* Patrimonio total */}
+      {(inversiones||[]).length>0 && (
+        <div className="analysis-card" style={{marginBottom:18}}>
+          <div className="card-titulo">💰 Mi Patrimonio</div>
+          <div className="patrimonio-total-row">
+            <div>
+              <div style={{fontSize:11,color:"var(--muted)"}}>Total en ARS</div>
+              <div style={{fontSize:28,fontWeight:800,letterSpacing:-1,background:"var(--grad)",WebkitBackgroundClip:"text",WebkitTextFillColor:"transparent",backgroundClip:"text"}}>{formatARS(totalPatrimonioARS)}</div>
+            </div>
+            {mep>0 && (
+              <div style={{textAlign:"right"}}>
+                <div style={{fontSize:11,color:"var(--muted)"}}>Total en USD</div>
+                <div style={{fontSize:22,fontWeight:800,letterSpacing:-.5,color:"var(--success)"}}>
+                  USD {totalPatrimonioUSD.toLocaleString("es-AR",{maximumFractionDigits:0})}
+                </div>
+              </div>
+            )}
+          </div>
+          <div style={{marginTop:14,display:"flex",flexDirection:"column",gap:6}}>
+            {carteraARS>0 && (
+              <div className="patrimonio-breakdown-fila">
+                <span>💼 Cartera de inversiones</span>
+                <span>{formatARS(carteraARS)}</span>
+              </div>
+            )}
+            {efectivoARS>0 && (
+              <div className="patrimonio-breakdown-fila">
+                <span>💵 Efectivo ARS</span>
+                <span>{formatARS(efectivoARS)}</span>
+              </div>
+            )}
+            {efectivoUSD>0 && (
+              <div className="patrimonio-breakdown-fila">
+                <span>💵 Efectivo USD</span>
+                <span>USD {efectivoUSD.toLocaleString("es-AR",{maximumFractionDigits:0})}{mep>0?` = ${formatARS(efectivoUSD*mep)}`:""}</span>
+              </div>
+            )}
+          </div>
+        </div>
+      )}
       {metas.length === 0
         ? <Vacio icon="🎯" titulo="Sin metas" sub="Tocá + para crear tu primera meta"/>
         : metas.map(meta => {
@@ -1642,14 +1716,24 @@ function PickerMedio({ value, onChange }) {
 }
 
 // ─── Inversiones ─────────────────────────────────────────────────────────────
+const EFECTIVO_TICKERS = ["EFECTIVO_ARS","EFECTIVO_USD"];
+
 function InversionesTab({ inversiones, cotizaciones, dolar, loadingCot, onActualizar, onAgregar, onEditar }) {
   const esARS    = (activo) => activo.toUpperCase().endsWith(".BA");
   const cotMap   = Object.fromEntries(cotizaciones.map(c=>[c.activo,c]));
   const aARS     = (precio, moneda) => moneda==="USD" ? precio*(dolar?.mep||0) : precio;
+  const mep      = dolar?.mep || 0;
 
-  // Agrupar por activo y calcular métricas
+  // Separar efectivo de activos de mercado
+  const invEfectivo = inversiones.filter(i=>EFECTIVO_TICKERS.includes(i.activo));
+  const invActivos  = inversiones.filter(i=>!EFECTIVO_TICKERS.includes(i.activo));
+  const efectivoARS = invEfectivo.filter(i=>i.activo==="EFECTIVO_ARS").reduce((s,i)=>s+Number(i.cantidad),0);
+  const efectivoUSD = invEfectivo.filter(i=>i.activo==="EFECTIVO_USD").reduce((s,i)=>s+Number(i.cantidad),0);
+  const efectivoTotalARS = efectivoARS + efectivoUSD*mep;
+
+  // Agrupar activos de mercado por ticker
   const activosMap = {};
-  inversiones.forEach(inv=>{
+  invActivos.forEach(inv=>{
     if (!activosMap[inv.activo]) activosMap[inv.activo]=[];
     activosMap[inv.activo].push(inv);
   });
@@ -1699,6 +1783,27 @@ function InversionesTab({ inversiones, cotizaciones, dolar, loadingCot, onActual
                   <span style={{fontSize:11}}>({ganTotalPct>=0?"+":""}{ganTotalPct.toFixed(1)}%)</span>
                 </div>
               </div>
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* Efectivo */}
+      {(efectivoARS>0||efectivoUSD>0) && (
+        <div className="inv-efectivo-card">
+          <div className="inv-efectivo-titulo">💵 Stock en efectivo</div>
+          {efectivoARS>0 && (
+            <div className="inv-efectivo-fila" onClick={()=>onEditar(invEfectivo.find(i=>i.activo==="EFECTIVO_ARS"))}>
+              <span>Pesos ARS</span>
+              <span style={{fontWeight:700}}>{formatARS(efectivoARS)}</span>
+              <span>✏️</span>
+            </div>
+          )}
+          {efectivoUSD>0 && (
+            <div className="inv-efectivo-fila" onClick={()=>onEditar(invEfectivo.find(i=>i.activo==="EFECTIVO_USD"))}>
+              <span>Dólares USD</span>
+              <span style={{fontWeight:700}}>USD {efectivoUSD.toLocaleString("es-AR",{maximumFractionDigits:0})}{mep>0?` ≈ ${formatARS(efectivoUSD*mep)}`:""}</span>
+              <span>✏️</span>
             </div>
           )}
         </div>
@@ -1785,40 +1890,85 @@ function InversionesTab({ inversiones, cotizaciones, dolar, loadingCot, onActual
 }
 
 function InversionModal({ inversion, saving, onGuardar, onEliminar, onCerrar }) {
+  const esEfectivoExistente = inversion && EFECTIVO_TICKERS.includes(inversion.activo);
+  const [tipo, setTipo] = useState(esEfectivoExistente ? "efectivo" : "activo");
   const [form, setForm] = useState({
-    activo:        inversion?.activo        || "",
-    cantidad:      inversion?.cantidad      ? String(inversion.cantidad)      : "",
-    precio_compra: inversion?.precio_compra ? String(inversion.precio_compra) : "",
-    fecha_compra:  inversion?.fecha_compra  || todayStr(),
+    activo:          esEfectivoExistente ? "" : (inversion?.activo || ""),
+    cantidad:        inversion?.cantidad ? String(inversion.cantidad) : "",
+    precio_compra:   inversion?.precio_compra && !esEfectivoExistente ? String(inversion.precio_compra) : "",
+    fecha_compra:    inversion?.fecha_compra || todayStr(),
+    moneda_efectivo: inversion?.activo==="EFECTIVO_USD" ? "USD" : "ARS",
   });
-  const set     = (k,v) => setForm(f=>({...f,[k]:v}));
-  const esValido = form.activo && Number(form.cantidad)>0 && Number(form.precio_compra)>0;
+  const set = (k,v) => setForm(f=>({...f,[k]:v}));
+
+  const esActivo  = tipo === "activo";
   const monedaLabel = form.activo.toUpperCase().endsWith(".BA") ? "ARS" : "USD";
+  const esValido  = esActivo
+    ? (form.activo && Number(form.cantidad)>0 && Number(form.precio_compra)>0)
+    : Number(form.cantidad)>0;
 
   return (
     <Modal titulo={inversion?"Editar posición":"Nueva posición"} onCerrar={onCerrar}>
-      <Campo label="Activo (ticker)">
-        <input type="text" placeholder="Ej: AAPL.BA  GGAL.BA  AAPL  MSFT"
-          value={form.activo} onChange={e=>set("activo",e.target.value.toUpperCase())}/>
-        <div style={{fontSize:11,color:"var(--muted)",marginTop:6,lineHeight:1.6}}>
-          Sufijo .BA → precio en ARS (CEDEARs / acciones arg.). Sin sufijo → precio en USD.
-        </div>
-      </Campo>
-      <Campo label="Cantidad (unidades)">
-        <input type="number" inputMode="decimal" placeholder="Ej: 10"
-          value={form.cantidad} onChange={e=>set("cantidad",e.target.value)}/>
-      </Campo>
-      <Campo label={`Precio de compra (${monedaLabel})`}>
-        <input type="number" inputMode="decimal" placeholder="Ej: 5000"
-          value={form.precio_compra} onChange={e=>set("precio_compra",e.target.value)}/>
-      </Campo>
-      <Campo label="Fecha de compra">
-        <input type="date" value={form.fecha_compra} onChange={e=>set("fecha_compra",e.target.value)}/>
-      </Campo>
-      <button className="btn-primario" disabled={!esValido||saving} onClick={()=>onGuardar(form)}>
-        {saving?"Guardando…":inversion?"Guardar cambios":"Agregar posición"}
+
+      {/* Selector de tipo — solo al crear nuevo */}
+      {!inversion && (
+        <Campo label="Tipo">
+          <div className="inv-tipo-picker">
+            <button className={`inv-tipo-btn${esActivo?" sel":""}`} onClick={()=>setTipo("activo")}>
+              📈 Activo
+            </button>
+            <button className={`inv-tipo-btn${!esActivo?" sel":""}`} onClick={()=>setTipo("efectivo")}>
+              💵 Efectivo
+            </button>
+          </div>
+        </Campo>
+      )}
+
+      {esActivo ? (
+        <>
+          <Campo label="Ticker">
+            <input type="text" placeholder="Ej: AAPL.BA · GGAL.BA · AL30.BA · GD30"
+              value={form.activo} onChange={e=>set("activo",e.target.value.toUpperCase())}/>
+            <div style={{fontSize:11,color:"var(--muted)",marginTop:6,lineHeight:1.6}}>
+              Sufijo .BA = precio en ARS (CEDEARs, acciones arg., bonos en pesos). Sin sufijo = USD (bonos hard, acciones exterior).
+            </div>
+          </Campo>
+          <Campo label="Cantidad (unidades)">
+            <input type="number" inputMode="decimal" placeholder="Ej: 10"
+              value={form.cantidad} onChange={e=>set("cantidad",e.target.value)}/>
+          </Campo>
+          <Campo label={`Precio de compra (${monedaLabel})`}>
+            <input type="number" inputMode="decimal" placeholder="Ej: 5000"
+              value={form.precio_compra} onChange={e=>set("precio_compra",e.target.value)}/>
+          </Campo>
+          <Campo label="Fecha de compra">
+            <input type="date" value={form.fecha_compra} onChange={e=>set("fecha_compra",e.target.value)}/>
+          </Campo>
+        </>
+      ) : (
+        <>
+          <Campo label="Moneda">
+            <div className="inv-tipo-picker">
+              <button className={`inv-tipo-btn${form.moneda_efectivo==="ARS"?" sel":""}`} onClick={()=>set("moneda_efectivo","ARS")}>
+                🇦🇷 Pesos ARS
+              </button>
+              <button className={`inv-tipo-btn${form.moneda_efectivo==="USD"?" sel":""}`} onClick={()=>set("moneda_efectivo","USD")}>
+                🇺🇸 Dólares USD
+              </button>
+            </div>
+          </Campo>
+          <Campo label={`Monto en ${form.moneda_efectivo}`}>
+            <input type="number" inputMode="decimal" placeholder={form.moneda_efectivo==="ARS"?"Ej: 500000":"Ej: 2000"}
+              value={form.cantidad} onChange={e=>set("cantidad",e.target.value)}/>
+          </Campo>
+        </>
+      )}
+
+      <button className="btn-primario" disabled={!esValido||saving}
+        onClick={()=>onGuardar({...form, tipo})}>
+        {saving?"Guardando…":inversion?"Guardar cambios":"Agregar"}
       </button>
-      {onEliminar && <button className="btn-peligro" onClick={onEliminar} disabled={saving}>Eliminar posición</button>}
+      {onEliminar && <button className="btn-peligro" onClick={onEliminar} disabled={saving}>Eliminar</button>}
     </Modal>
   );
 }
@@ -2029,6 +2179,10 @@ const CSS = `
   .cat-row:last-child { border-bottom:none; }
   .cat-row-top { display:flex; justify-content:space-between; align-items:center; font-size:14px; }
 
+  /* ── Patrimonio metas ── */
+  .patrimonio-total-row { display:flex; justify-content:space-between; align-items:flex-end; gap:12px; margin-bottom:4px; }
+  .patrimonio-breakdown-fila { display:flex; justify-content:space-between; font-size:13px; color:var(--muted); padding:5px 0; border-top:1px solid rgba(59,130,246,.06); }
+
   /* ── Inversiones ── */
   .inv-refresh-row { display:flex; justify-content:space-between; align-items:center; margin-bottom:14px; gap:8px; }
   .inv-update-txt { font-size:11px; color:var(--muted); }
@@ -2045,6 +2199,15 @@ const CSS = `
   .inv-lotes { border-top:1px solid var(--border); margin-top:12px; padding-top:10px; display:flex; flex-direction:column; gap:6px; }
   .inv-lote { display:flex; justify-content:space-between; align-items:center; font-size:12px; color:var(--muted); padding:7px 10px; border-radius:8px; background:var(--card2); cursor:pointer; gap:8px; }
   .inv-lote:active { opacity:.7; }
+  .inv-efectivo-card { background:var(--card); border:1px solid var(--border); border-radius:var(--r-sm); padding:16px; margin-bottom:12px; }
+  .inv-efectivo-titulo { font-size:11px; font-weight:700; color:var(--muted); text-transform:uppercase; letter-spacing:.6px; margin-bottom:12px; }
+  .inv-efectivo-fila { display:flex; justify-content:space-between; align-items:center; font-size:14px; padding:10px 0; border-bottom:1px solid rgba(59,130,246,.06); cursor:pointer; gap:8px; }
+  .inv-efectivo-fila:last-child { border-bottom:none; padding-bottom:0; }
+  .inv-efectivo-fila:active { opacity:.7; }
+  .inv-tipo-picker { display:flex; gap:8px; }
+  .inv-tipo-btn { flex:1; padding:10px 8px; border-radius:var(--r-sm); font-size:13px; font-weight:600; border:1.5px solid var(--border); background:var(--card2); color:var(--muted); transition:all .15s; }
+  .inv-tipo-btn.sel { background:var(--grad); border-color:transparent; color:#fff; }
+  .inv-tipo-btn:active { opacity:.7; }
 
   /* ── Patrimonio home ── */
   .patrimonio-fila { display:flex; justify-content:space-between; align-items:center; padding:13px 16px; font-size:14px; border-bottom:1px solid rgba(59,130,246,.06); }
