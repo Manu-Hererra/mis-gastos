@@ -170,6 +170,7 @@ export default function App() {
   const [fijos,          setFijos]          = useState([]);
   const [metas,          setMetas]          = useState([]);
   const [contribuciones, setContribuciones] = useState([]);
+  const [dolar,          setDolar]          = useState(null);
   const [modal,          setModal]          = useState(null);
   const [editing,        setEditing]        = useState(null);
   const [loading,        setLoading]        = useState(true);
@@ -200,6 +201,15 @@ export default function App() {
     setGastos(exp); setFijos(fix); setMetas(met); setContribuciones(con);
     return { exp, fix, met, con };
   }
+
+  useEffect(()=>{
+    fetch("https://dolarapi.com/v1/dolares")
+      .then(r=>r.json())
+      .then(data=>{
+        const find = casa => data.find(d=>d.casa===casa)?.venta ?? null;
+        setDolar({ mep: find("bolsa"), blue: find("blue"), oficial: find("oficial") });
+      }).catch(()=>{});
+  },[]);
 
   useEffect(()=>{
     (async()=>{
@@ -272,6 +282,7 @@ export default function App() {
             category: data.category, card: data.card, date: dateStr,
             is_fixed: false, fixed_ref: null,
             cuotas: n, cuota_num: i + 1, cuota_grupo: grupo,
+            tags: data.tags || null,
           };
         });
         await dbUpsert("expenses", rows);
@@ -284,6 +295,7 @@ export default function App() {
           cuotas: editing?.cuotas ?? null,
           cuota_num: editing?.cuota_num ?? null,
           cuota_grupo: editing?.cuota_grupo ?? null,
+          tags: data.tags || null,
         }]);
       }
       await recargar(); cerrarModal();
@@ -424,7 +436,7 @@ export default function App() {
             {tab==="gastos"   && <GastosTab gastos={gastosPeriodo} label={labelPeriod} total={totalPeriodo} vista={vista} diaClose={diaClose} esActual={esActual} onPrev={irPrev} onNext={irNext} onCambiarVista={cambiarVista} onAgregar={()=>abrirModal("gasto")} onEditar={e=>abrirModal("gasto",e)}/>}
             {tab==="fijos"    && <FijosTab fijos={fijos} onAgregar={()=>abrirModal("fijo")} onEditar={f=>abrirModal("fijo",f)}/>}
             {tab==="medios"   && <MediosTab gastos={gastosPeriodo} total={totalPeriodo} label={labelPeriod} esActual={esActual} onPrev={irPrev} onNext={irNext}/>}
-            {tab==="analisis" && <AnalisisTab gastos={gastosPeriodo} total={totalPeriodo} label={labelPeriod} sueldo={sueldo} esActual={esActual} onPrev={irPrev} onNext={irNext} onEditarSueldo={()=>abrirModal("settings")}/>}
+            {tab==="analisis" && <AnalisisTab gastos={gastosPeriodo} todosGastos={gastos} total={totalPeriodo} label={labelPeriod} sueldo={sueldo} esActual={esActual} onPrev={irPrev} onNext={irNext} onEditarSueldo={()=>abrirModal("settings")} dolar={dolar} diaClose={diaClose}/>}
             {tab==="metas"    && <MetasTab metas={metas} contribuciones={contribuciones} saving={saving} onNuevaMeta={()=>abrirModal("meta")} onEditarMeta={m=>abrirModal("meta",m)} onEliminarMeta={id=>eliminarMeta(id)} onAgregarAporte={m=>abrirModal("contribucion",m)} onEliminarAporte={id=>eliminarContribucion(id)}/>}
           </div>
         </div>
@@ -737,23 +749,61 @@ function MediosTab({ gastos, total, label, esActual, onPrev, onNext }) {
 }
 
 // ─── Análisis ─────────────────────────────────────────────────────────────────
-function AnalisisTab({ gastos, total, label, sueldo, esActual, onPrev, onNext, onEditarSueldo }) {
-  const ahorro   = sueldo-total;
-  const pctGasto = sueldo>0?Math.min(100,(total/sueldo)*100):0;
-  const pctAhorro= sueldo>0?Math.max(0,(ahorro/sueldo)*100):0;
-  const porCat   = CATS.map(c=>({...c,total:gastos.filter(e=>e.category===c.id).reduce((s,e)=>s+Number(e.amount),0)})).filter(c=>c.total>0).sort((a,b)=>b.total-a.total);
+function AnalisisTab({ gastos, todosGastos, total, label, sueldo, esActual, onPrev, onNext, onEditarSueldo, dolar, diaClose }) {
+  const ahorro    = sueldo - total;
+  const pctGasto  = sueldo > 0 ? Math.min(100,(total/sueldo)*100) : 0;
+  const pctAhorro = sueldo > 0 ? Math.max(0,(ahorro/sueldo)*100) : 0;
+  const porCat    = CATS.map(c=>({...c, total: gastos.filter(e=>e.category===c.id).reduce((s,e)=>s+Number(e.amount),0)})).filter(c=>c.total>0).sort((a,b)=>b.total-a.total);
 
-  const tips2=[];
-  if (porCat.length>0) { const t=porCat[0]; tips2.push(`${t.icon} Mayor gasto: ${t.name} con ${formatARS(t.total)}${sueldo>0?` (${(t.total/sueldo*100).toFixed(0)}% del sueldo)`:""}.`); }
-  const sal=porCat.find(c=>c.id==="salidas"); if(sal&&sueldo>0&&sal.total/sueldo>0.15) tips2.push("🍕 Gastás más del 15% del sueldo en Salidas.");
-  const sus=porCat.find(c=>c.id==="suscripciones"); if(sus) tips2.push(`📱 ${formatARS(sus.total)} en Suscripciones. Revisá si usás todo.`);
-  if(sueldo>0&&pctAhorro<10&&ahorro>=0) tips2.push("⚠️ Ahorrás menos del 10%. El objetivo recomendado es 20%.");
-  if(sueldo>0&&ahorro<0) tips2.push(`🚨 Gastás más de lo que ganás. Diferencia: ${formatARS(Math.abs(ahorro))}.`);
-  if(sueldo===0) tips2.push("💡 Configurá tu sueldo en ⚙️ para ver el análisis completo.");
+  // ── Comparativa 6 meses ──
+  const hoy = new Date();
+  const ultimos6 = Array.from({length:6},(_,i)=>{
+    const d = new Date(hoy.getFullYear(), hoy.getMonth()-5+i, 1);
+    const mk = `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}`;
+    const tot = todosGastos.filter(e=>dateToMonth(e.date)===mk).reduce((s,e)=>s+Number(e.amount),0);
+    return { mk, label: d.toLocaleDateString("es-AR",{month:"short"}), total: tot };
+  });
+  const maxMes = Math.max(...ultimos6.map(m=>m.total), 1);
+  const mkActual = currentMonth();
+
+  // ── Análisis inteligente ──
+  const ia = [];
+  const mesAnteriorMk = (() => { const d=new Date(hoy.getFullYear(),hoy.getMonth()-1,1); return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}`; })();
+  const totalMesAnt = todosGastos.filter(e=>dateToMonth(e.date)===mesAnteriorMk).reduce((s,e)=>s+Number(e.amount),0);
+  if (totalMesAnt > 0 && esActual) {
+    const diff = total - totalMesAnt;
+    const pct  = Math.abs((diff/totalMesAnt)*100).toFixed(0);
+    if (diff > 0) ia.push(`📈 Gastás ${pct}% más que el mes pasado (${formatARS(diff)} adicionales). Revisá en qué categorías subió.`);
+    else if (diff < 0) ia.push(`📉 Gastás ${pct}% menos que el mes pasado (${formatARS(Math.abs(diff))} menos). ¡Muy bien!`);
+  }
+  if (porCat.length > 0) {
+    const top = porCat[0];
+    ia.push(`${top.icon} Tu mayor gasto es ${top.name}: ${formatARS(top.total)}${sueldo>0?` (${(top.total/sueldo*100).toFixed(0)}% del sueldo)`:""}.`);
+  }
+  const sal = porCat.find(c=>c.id==="salidas");
+  if (sal && sueldo > 0 && sal.total/sueldo > 0.15) ia.push(`🍕 Gastás ${(sal.total/sueldo*100).toFixed(0)}% del sueldo en Salidas. El recomendado es menos del 15%. Considerá un presupuesto semanal.`);
+  const sus = porCat.find(c=>c.id==="suscripciones");
+  if (sus) ia.push(`📱 ${formatARS(sus.total)} en suscripciones. Hacé una lista de las que usás al menos una vez por semana; cancelá el resto.`);
+  const variableTotal = gastos.filter(e=>!e.is_fixed).reduce((s,e)=>s+Number(e.amount),0);
+  const fijoTotal     = gastos.filter(e=>e.is_fixed).reduce((s,e)=>s+Number(e.amount),0);
+  if (sueldo > 0 && variableTotal > sueldo * 0.4) ia.push(`💡 Tus gastos variables (${formatARS(variableTotal)}) superan el 40% del sueldo. Identificá cuáles podés recortar primero.`);
+  if (sueldo > 0 && pctAhorro < 10 && ahorro >= 0) ia.push(`⚠️ Ahorrás el ${pctAhorro.toFixed(0)}% del sueldo. El objetivo recomendado es 20%. Intentá automatizar un depósito a una caja de ahorro al cobrar.`);
+  if (sueldo > 0 && ahorro < 0)  ia.push(`🚨 Gastás ${formatARS(Math.abs(ahorro))} más de lo que ganás. Prioridad: reducir gastos variables hasta volver al equilibrio.`);
+  if (sueldo > 0 && pctAhorro >= 20) ia.push(`🏆 Ahorrás el ${pctAhorro.toFixed(0)}% del sueldo. Excelente. Considerá invertir el excedente para no perder contra la inflación.`);
+  if (sueldo === 0) ia.push("💡 Configurá tu sueldo en ⚙️ para ver el análisis completo personalizado.");
+
+  // ── Análisis tarjeta de crédito ──
+  const gastosCred  = gastos.filter(e=>e.card==="credito");
+  const totalCred   = gastosCred.reduce((s,e)=>s+Number(e.amount),0);
+  const pctCred     = total > 0 ? (totalCred/total*100).toFixed(0) : 0;
+  const cuotasPend  = gastosCred.filter(e=>e.cuota_num && e.cuotas && e.cuota_num < e.cuotas);
+  const porCatCred  = CATS.map(c=>({...c, total: gastosCred.filter(e=>e.category===c.id).reduce((s,e)=>s+Number(e.amount),0)})).filter(c=>c.total>0).sort((a,b)=>b.total-a.total);
 
   return (
     <>
       <NavPeriod label={label} esActual={esActual} onPrev={onPrev} onNext={onNext}/>
+
+      {/* Resumen */}
       <div className="hero-card">
         <div className="hero-label">Resumen del período</div>
         {sueldo>0 ? (
@@ -778,12 +828,13 @@ function AnalisisTab({ gastos, total, label, sueldo, esActual, onPrev, onNext, o
           </>
         )}
       </div>
+
       {sueldo>0 && (
         <div className="stats-row">
           {[
             {label:"Gastado",    val:`${pctGasto.toFixed(0)}%`,  color:"var(--danger)"},
             {label:"Ahorrado",   val:`${pctAhorro.toFixed(0)}%`, color:pctAhorro>=20?"var(--success)":"var(--warn)"},
-            {label:"Movimientos",val:gastos.length,               color:"var(--text)"},
+            {label:"Movimientos",val:gastos.length,              color:"var(--text)"},
           ].map(s=>(
             <div key={s.label} className="stat-card">
               <div className="stat-label">{s.label}</div>
@@ -792,12 +843,105 @@ function AnalisisTab({ gastos, total, label, sueldo, esActual, onPrev, onNext, o
           ))}
         </div>
       )}
-      {tips2.length>0 && (
+
+      {/* Análisis inteligente */}
+      {ia.length>0 && (
         <div className="analysis-card">
-          <div className="card-titulo">Análisis</div>
-          {tips2.map((t,i)=><div key={i} className="sugerencia">{t}</div>)}
+          <div className="card-titulo">🤖 Análisis inteligente</div>
+          {ia.map((t,i)=><div key={i} className="sugerencia">{t}</div>)}
         </div>
       )}
+
+      {/* Comparativa 6 meses */}
+      {todosGastos.length>0 && (
+        <div className="analysis-card">
+          <div className="card-titulo">📊 Comparativa mensual</div>
+          <div className="comp-chart">
+            {ultimos6.map(m=>(
+              <div key={m.mk} className="comp-col">
+                <div className="comp-bar-wrap">
+                  <div className="comp-bar" style={{
+                    height:`${Math.max(4,(m.total/maxMes)*100)}%`,
+                    background: m.mk===mkActual ? "var(--grad)" : "rgba(59,130,246,.25)"
+                  }}/>
+                </div>
+                <div className="comp-label" style={{color:m.mk===mkActual?"var(--accent2)":"var(--muted)"}}>{m.label}</div>
+                {m.total>0 && <div className="comp-val">{formatARS(m.total).replace("$ ","$")}</div>}
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* Dólar */}
+      {dolar && (
+        <div className="analysis-card">
+          <div className="card-titulo">💵 Cotización del dólar (hoy)</div>
+          <div className="dolar-row">
+            {[["Oficial", dolar.oficial],["MEP", dolar.mep],["Blue", dolar.blue]].map(([n,v])=>(
+              <div key={n} className="dolar-item">
+                <div className="dolar-nombre">{n}</div>
+                <div className="dolar-val">${v ? v.toLocaleString("es-AR") : "–"}</div>
+              </div>
+            ))}
+          </div>
+          {dolar.mep && total > 0 && (
+            <div style={{marginTop:14,fontSize:13,color:"var(--muted)",borderTop:"1px solid var(--border)",paddingTop:12}}>
+              Tus gastos de este período equivalen a{" "}
+              <span style={{fontWeight:700,color:"var(--text)"}}>
+                USD {(total/dolar.mep).toLocaleString("es-AR",{maximumFractionDigits:0})}
+              </span>{" "}al MEP y{" "}
+              <span style={{fontWeight:700,color:"var(--text)"}}>
+                USD {(total/dolar.blue).toLocaleString("es-AR",{maximumFractionDigits:0})}
+              </span>{" "}al blue.
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* Tarjeta de crédito */}
+      {gastosCred.length>0 && (
+        <div className="analysis-card">
+          <div className="card-titulo">💳 Tarjeta de crédito — cierre</div>
+          <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:10}}>
+            <div>
+              <div style={{fontSize:28,fontWeight:800,letterSpacing:-1}}>{formatARS(totalCred)}</div>
+              <div style={{fontSize:12,color:"var(--muted)",marginTop:2}}>{pctCred}% del total del período · {gastosCred.length} movimientos</div>
+            </div>
+          </div>
+          {cuotasPend.length>0 && (
+            <div className="cred-alert">
+              ⏳ Tenés <strong>{cuotasPend.length}</strong> cuota{cuotasPend.length!==1?"s":""} pendiente{cuotasPend.length!==1?"s":""} que seguirán impactando en próximos cierres.
+            </div>
+          )}
+          {porCatCred.length>0 && (
+            <>
+              <div className="filter-section-label" style={{marginTop:12}}>Por categoría</div>
+              {porCatCred.map(c=>{
+                const pct = totalCred>0?(c.total/totalCred*100):0;
+                return (
+                  <div key={c.id} className="cat-row">
+                    <div className="cat-row-top">
+                      <span>{c.icon} {c.name}</span>
+                      <span style={{fontWeight:700}}>{formatARS(c.total)}</span>
+                    </div>
+                    <div className="barra-track" style={{marginTop:6}}>
+                      <div className="barra-fill" style={{width:`${pct.toFixed(0)}%`,background:c.color}}/>
+                    </div>
+                  </div>
+                );
+              })}
+            </>
+          )}
+          {sueldo>0 && totalCred/sueldo>0.3 && (
+            <div className="sugerencia" style={{marginTop:10,borderTop:"1px solid var(--border)",paddingTop:10}}>
+              ⚠️ Usás la tarjeta para el {(totalCred/sueldo*100).toFixed(0)}% del sueldo. El límite recomendado es 30%. Intentá pagar más gastos con débito o efectivo.
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* Por categoría */}
       {porCat.length>0 && (
         <div className="analysis-card">
           <div className="card-titulo">Por categoría</div>
@@ -821,6 +965,7 @@ function AnalisisTab({ gastos, total, label, sueldo, esActual, onPrev, onNext, o
           })}
         </div>
       )}
+
       {gastos.length===0 && <Vacio icon="📊" titulo="Sin datos" sub="Agregá gastos para ver el análisis"/>}
     </>
   );
@@ -859,6 +1004,9 @@ function FilaGasto({ gasto:e, onClick, conSigno=true }) {
           <span className="fila-medio" style={{color:medio.color}}>{medio.icon} {medio.name}</span>
           {e.is_fixed && <span className="chip-fijo">FIJO</span>}
           {e.cuota_num && e.cuotas && <span className="chip-cuota">{e.cuota_num}/{e.cuotas}</span>}
+          {e.tags && e.tags.split(",").map(t=>t.trim()).filter(Boolean).map(t=>(
+            <span key={t} className="chip-tag">{t}</span>
+          ))}
         </div>
       </div>
       <div className="fila-monto" style={{color:cat.color}}>{conSigno?"-":""}{formatARS(e.amount)}</div>
@@ -952,6 +1100,7 @@ function GastoModal({ gasto, saving, onGuardar, onEliminar, onCerrar }) {
     card:        gasto?.card     || MEDIOS[0].id,
     date:        gasto?.date     || todayStr(),
     cuotas:      1,
+    tags:        gasto?.tags     || "",
   });
   const set     = (k,v) => setForm(f=>({...f,[k]:v}));
   const numStr  = form.amount.replace(/\D/g,"");
@@ -978,6 +1127,10 @@ function GastoModal({ gasto, saving, onGuardar, onEliminar, onCerrar }) {
       )}
       <Campo label="Fecha">
         <input type="date" value={form.date} onChange={e=>set("date",e.target.value)}/>
+      </Campo>
+      <Campo label="Etiquetas (opcional)">
+        <input type="text" placeholder="Ej: viaje, regalo, trabajo  (separadas por coma)"
+          value={form.tags} onChange={e=>set("tags",e.target.value)}/>
       </Campo>
       <button className="btn-primario" disabled={!numStr||saving} onClick={()=>onGuardar({...form,amount:numStr})}>
         {saving?"Guardando…":gasto?"Guardar cambios":"Agregar gasto"}
@@ -1326,6 +1479,24 @@ const CSS = `
   .fila-monto  { font-weight:700; font-size:15px; flex-shrink:0; letter-spacing:-.3px; }
   .chip-fijo   { font-size:9px; padding:2px 6px; border-radius:99px; font-weight:700; background:rgba(59,130,246,.18); color:var(--accent2); }
   .chip-cuota  { font-size:9px; padding:2px 6px; border-radius:99px; font-weight:700; background:rgba(245,158,11,.18); color:#fbbf24; }
+  .chip-tag    { font-size:9px; padding:2px 7px; border-radius:99px; font-weight:600; background:rgba(99,102,241,.18); color:#a5b4fc; }
+
+  /* ── Comparativa mensual ── */
+  .comp-chart  { display:flex; align-items:flex-end; gap:6px; height:120px; padding-top:8px; }
+  .comp-col    { flex:1; display:flex; flex-direction:column; align-items:center; gap:4px; height:100%; }
+  .comp-bar-wrap { flex:1; width:100%; display:flex; align-items:flex-end; }
+  .comp-bar    { width:100%; border-radius:6px 6px 0 0; min-height:4px; transition:height .4s; }
+  .comp-label  { font-size:10px; font-weight:600; text-transform:capitalize; }
+  .comp-val    { font-size:8px; color:var(--muted); text-align:center; white-space:nowrap; }
+
+  /* ── Dólar ── */
+  .dolar-row   { display:flex; gap:8px; }
+  .dolar-item  { flex:1; background:var(--card2); border-radius:var(--r-xs); padding:12px 8px; text-align:center; }
+  .dolar-nombre{ font-size:10px; font-weight:700; color:var(--muted); text-transform:uppercase; letter-spacing:.5px; margin-bottom:4px; }
+  .dolar-val   { font-size:16px; font-weight:800; color:var(--success); }
+
+  /* ── Crédito alert ── */
+  .cred-alert  { background:rgba(245,158,11,.08); border:1px solid rgba(245,158,11,.2); border-radius:var(--r-xs); padding:10px 14px; font-size:13px; color:#fbbf24; margin:10px 0; line-height:1.6; }
   .cuotas-picker { display:flex; flex-wrap:wrap; gap:7px; }
   .cuotas-opt  { padding:8px 14px; border-radius:99px; font-size:13px; font-weight:600; border:1.5px solid var(--border); background:var(--card2); color:var(--muted); transition:all .15s; }
   .cuotas-opt.sel { background:var(--grad); border-color:transparent; color:#fff; }
