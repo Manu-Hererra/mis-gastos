@@ -204,6 +204,10 @@ export default function App() {
   }
 
   useEffect(()=>{
+    document.documentElement.setAttribute("data-theme", settings.tema || "dark");
+  }, [settings.tema]);
+
+  useEffect(()=>{
     const on  = () => setOnline(true);
     const off = () => setOnline(false);
     window.addEventListener("online",  on);
@@ -451,6 +455,10 @@ export default function App() {
             </div>
             <div style={{display:"flex",gap:8,alignItems:"center"}}>
               {saving && <span className="saving-txt">Guardando…</span>}
+              <button className="icon-btn" title={settings.tema==="light"?"Modo oscuro":"Modo claro"}
+                onClick={()=>guardarSettings({tema:settings.tema==="light"?"dark":"light"})}>
+                {settings.tema==="light"?"🌙":"☀️"}
+              </button>
               <button className="icon-btn" onClick={()=>abrirModal("settings")}>⚙️</button>
             </div>
           </header>
@@ -1837,4 +1845,37 @@ const CSS = `
   .medio-opt { flex:1; display:flex; flex-direction:column; align-items:center; gap:5px; padding:12px 4px; border-radius:13px; font-size:12px; font-weight:600; border:1.5px solid var(--border); background:var(--card2); color:var(--muted); transition:all .15s; }
   .medio-opt span:first-child { font-size:20px; }
   .medio-opt:active { opacity:.7; }
+
+  /* ── Tema claro ── */
+  [data-theme="light"] {
+    --bg:#eef2ff; --card:#ffffff; --card2:#f0f4ff;
+    --border:rgba(59,130,246,.15); --accent:#3b82f6; --accent2:#1d4ed8;
+    --text:#0f172a; --muted:#64748b; --danger:#dc2626;
+    --success:#059669; --warn:#b45309;
+  }
+  [data-theme="light"] body { background:var(--bg); }
+  [data-theme="light"] .home-hero { background:linear-gradient(175deg,#dbeafe 0%,#e0e7ff 50%,#eef2ff 100%); }
+  [data-theme="light"] .home-hero-glow { background:radial-gradient(circle,rgba(99,102,241,.1) 0%,transparent 70%); }
+  [data-theme="light"] .home-saludo { color:rgba(15,23,42,.5); }
+  [data-theme="light"] .home-frase-texto { color:#1e293b; }
+  [data-theme="light"] .home-frase-autor { color:rgba(30,41,98,.55); }
+  [data-theme="light"] .home-frase-comilla { color:rgba(99,102,241,.3); }
+  [data-theme="light"] .home-mes-card { background:rgba(255,255,255,.85); border-color:rgba(59,130,246,.2); }
+  [data-theme="light"] .home-mes-label { color:rgba(15,23,42,.45); }
+  [data-theme="light"] .home-mes-total { color:#0f172a; }
+  [data-theme="light"] .ham-btn { background:rgba(0,0,0,.05); border-color:rgba(0,0,0,.1); }
+  [data-theme="light"] .ham-btn span { background:var(--text); }
+  [data-theme="light"] .icon-btn { background:rgba(0,0,0,.05); border-color:rgba(0,0,0,.1); }
+  [data-theme="light"] .topbar { background:var(--bg); border-bottom:1px solid var(--border); }
+  [data-theme="light"] .drawer { background:#ffffff; border-right-color:rgba(59,130,246,.15); }
+  [data-theme="light"] .drawer-header { background:linear-gradient(160deg,rgba(59,130,246,.07),rgba(99,102,241,.04)); border-bottom-color:rgba(59,130,246,.1); }
+  [data-theme="light"] .drawer-app-name { color:var(--text); }
+  [data-theme="light"] .drawer-cfg { color:var(--muted); }
+  [data-theme="light"] .drawer-cfg:active { background:var(--card2); }
+  [data-theme="light"] .drawer-footer { border-top-color:rgba(59,130,246,.1); }
+  [data-theme="light"] .sheet { background:#ffffff; border-top-color:rgba(59,130,246,.15); }
+  [data-theme="light"] .sheet-handle { background:rgba(0,0,0,.1); }
+  [data-theme="light"] .sheet-cerrar { background:var(--card2); }
+  [data-theme="light"] .overlay { background:rgba(0,0,0,.4); }
+  [data-theme="light"] .splash { background:var(--bg); }
 `;
