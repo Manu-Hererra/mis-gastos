@@ -894,6 +894,19 @@ function AnalisisTab({ gastos, todosGastos, total, label, sueldo, esActual, onPr
   const cuotasPend  = gastosCred.filter(e=>e.cuota_num && e.cuotas && e.cuota_num < e.cuotas);
   const porCatCred  = CATS.map(c=>({...c, total: gastosCred.filter(e=>e.category===c.id).reduce((s,e)=>s+Number(e.amount),0)})).filter(c=>c.total>0).sort((a,b)=>b.total-a.total);
 
+  // ── Gastos hormiga ──
+  const _grupos = {};
+  gastos.filter(e=>!e.is_fixed).forEach(e=>{
+    const key = (e.description||"").toLowerCase().trim() || e.category;
+    if (!_grupos[key]) _grupos[key] = { label: e.description || getCat(e.category).name, cat: getCat(e.category), montos:[] };
+    _grupos[key].montos.push(Number(e.amount));
+  });
+  const hormigas = Object.values(_grupos)
+    .filter(g=>g.montos.length>=2)
+    .map(g=>({...g, count:g.montos.length, total:g.montos.reduce((s,v)=>s+v,0), promUnit:g.montos.reduce((s,v)=>s+v,0)/g.montos.length}))
+    .sort((a,b)=>b.count-a.count||b.total-a.total)
+    .slice(0,6);
+
   return (
     <>
       <NavPeriod label={label} esActual={esActual} onPrev={onPrev} onNext={onNext}/>
@@ -1066,6 +1079,26 @@ function AnalisisTab({ gastos, todosGastos, total, label, sueldo, esActual, onPr
               ⚠️ Usás la tarjeta para el {(totalCred/sueldo*100).toFixed(0)}% del sueldo. El límite recomendado es 30%. Intentá pagar más gastos con débito o efectivo.
             </div>
           )}
+        </div>
+      )}
+
+      {/* Gastos hormiga */}
+      {hormigas.length>0 && (
+        <div className="analysis-card">
+          <div className="card-titulo">🐜 Gastos hormiga</div>
+          <div style={{fontSize:12,color:"var(--muted)",marginBottom:14,lineHeight:1.6}}>
+            Gastos variables que se repiten y suman más de lo que parecen
+          </div>
+          {hormigas.map((h,i)=>(
+            <div key={i} className="hormiga-row">
+              <span className="hormiga-icon" style={{background:h.cat.color+"1a"}}>{h.cat.icon}</span>
+              <div className="hormiga-info">
+                <div className="hormiga-nombre">{h.label}</div>
+                <div className="hormiga-sub">×{h.count} veces · {formatARS(h.promUnit)} c/u</div>
+              </div>
+              <div className="hormiga-total" style={{color:h.cat.color}}>{formatARS(h.total)}</div>
+            </div>
+          ))}
         </div>
       )}
 
@@ -1715,6 +1748,15 @@ const CSS = `
   .cat-row    { padding:11px 0; border-bottom:1px solid rgba(59,130,246,.06); }
   .cat-row:last-child { border-bottom:none; }
   .cat-row-top { display:flex; justify-content:space-between; align-items:center; font-size:14px; }
+
+  /* ── Gastos hormiga ── */
+  .hormiga-row { display:flex; align-items:center; gap:12px; padding:10px 0; border-bottom:1px solid rgba(59,130,246,.06); }
+  .hormiga-row:last-child { border-bottom:none; padding-bottom:0; }
+  .hormiga-icon { width:36px; height:36px; border-radius:10px; display:flex; align-items:center; justify-content:center; font-size:18px; flex-shrink:0; }
+  .hormiga-info { flex:1; min-width:0; }
+  .hormiga-nombre { font-size:13px; font-weight:600; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; margin-bottom:2px; }
+  .hormiga-sub { font-size:11px; color:var(--muted); }
+  .hormiga-total { font-size:15px; font-weight:800; flex-shrink:0; letter-spacing:-.3px; }
 
   /* ── Proyección ── */
   .proy-row { display:flex; justify-content:space-between; align-items:flex-start; gap:12px; }
