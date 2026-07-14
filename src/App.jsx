@@ -379,6 +379,7 @@ export default function App() {
         name: data.name,
         target_amount: Number(data.target_amount),
         target_date: data.target_date || null,
+        moneda: data.moneda || "ARS",
       }]);
       await recargar(); cerrarModal();
     } catch(e){ alert("Error: " + e.message); }
@@ -1403,10 +1404,16 @@ function MetasTab({ metas, contribuciones, saving, inversiones, cotizaciones, do
       {metas.length === 0
         ? <Vacio icon="🎯" titulo="Sin metas" sub="Tocá + para crear tu primera meta"/>
         : metas.map(meta => {
-          const aportado = contribuciones.filter(c=>c.goal_id===meta.id).reduce((s,c)=>s+Number(c.amount),0);
-          const pct = meta.target_amount > 0 ? Math.min(100,(aportado/meta.target_amount)*100) : 0;
-          const contribs = contribuciones.filter(c=>c.goal_id===meta.id);
-          const cumplida = aportado >= Number(meta.target_amount);
+          const monedaMeta  = meta.moneda || "ARS";
+          const esUSD       = monedaMeta === "USD";
+          const target      = Number(meta.target_amount);
+          // Progreso = patrimonio total en la moneda de la meta
+          const progreso    = esUSD ? totalPatrimonioUSD : totalPatrimonioARS;
+          const pct         = target > 0 ? Math.min(100,(progreso/target)*100) : 0;
+          const cumplida    = progreso >= target;
+          // Equivalente en la otra moneda
+          const equivTarget = esUSD ? (mep>0?target*mep:null) : (mep>0?target/mep:null);
+          const equivProg   = esUSD ? (mep>0?progreso*mep:null) : (mep>0?progreso/mep:null);
           return (
             <div key={meta.id} className="meta-card">
               <div className="meta-header">
@@ -1420,29 +1427,31 @@ function MetasTab({ metas, contribuciones, saving, inversiones, cotizaciones, do
                 </div>
                 <button className="icon-btn-sm" onClick={()=>onEditarMeta(meta)}>✏️</button>
               </div>
+
+              {/* Progreso principal */}
               <div className="meta-progress-label">
-                <span style={{fontWeight:800,fontSize:20}}>{formatARS(aportado)}</span>
-                <span className="meta-de-label"> de {formatARS(meta.target_amount)}</span>
+                <span style={{fontWeight:800,fontSize:20}}>
+                  {esUSD ? `USD ${progreso.toLocaleString("es-AR",{maximumFractionDigits:0})}` : formatARS(progreso)}
+                </span>
+                <span className="meta-de-label">
+                  {" "}de {esUSD ? `USD ${target.toLocaleString("es-AR",{maximumFractionDigits:0})}` : formatARS(target)}
+                </span>
                 <span className="meta-pct">{pct.toFixed(0)}%</span>
               </div>
+
+              {/* Equivalente en la otra moneda */}
+              {equivTarget!==null && (
+                <div style={{fontSize:12,color:"var(--muted)",marginTop:4}}>
+                  {esUSD
+                    ? `≈ ${formatARS(equivProg??0)} de ${formatARS(equivTarget)} al MEP`
+                    : `≈ USD ${(equivProg??0).toLocaleString("es-AR",{maximumFractionDigits:0})} de USD ${equivTarget.toLocaleString("es-AR",{maximumFractionDigits:0})} al MEP`
+                  }
+                </div>
+              )}
+
               <div className="barra-track" style={{height:10,marginTop:10,marginBottom:4}}>
                 <div className="barra-fill" style={{width:`${pct}%`,background:cumplida?"var(--success)":pct>=70?"var(--warn)":"var(--grad)"}}/>
               </div>
-              {contribs.length > 0 && (
-                <div className="meta-contribs">
-                  {contribs.map(c=>(
-                    <div key={c.id} className="meta-contrib-fila">
-                      <span className="meta-contrib-fecha">{dateLabel(c.date)}</span>
-                      {c.note && <span className="meta-contrib-nota">{c.note}</span>}
-                      <span className="meta-contrib-monto">+{formatARS(c.amount)}</span>
-                      <button className="meta-contrib-del" onClick={()=>onEliminarAporte(c.id)}>✕</button>
-                    </div>
-                  ))}
-                </div>
-              )}
-              <button className="btn-aporte" onClick={()=>onAgregarAporte(meta)} disabled={saving}>
-                + Agregar aporte
-              </button>
             </div>
           );
         })
@@ -1579,10 +1588,18 @@ function MetaModal({ meta, saving, onGuardar, onEliminar, onCerrar }) {
     name:          meta?.name || "",
     target_amount: meta?.target_amount ? String(meta.target_amount) : "",
     target_date:   meta?.target_date || "",
+    moneda:        meta?.moneda || "ARS",
   });
   const set    = (k,v) => setForm(f=>({...f,[k]:v}));
-  const numStr = form.target_amount.replace(/\D/g,"");
-  const display= numStr ? new Intl.NumberFormat("es-AR").format(Number(numStr)) : "";
+  const esUSD  = form.moneda === "USD";
+
+  // Para ARS: solo enteros formateados. Para USD: decimales libres.
+  const rawAmt      = form.target_amount;
+  const numStrARS   = rawAmt.replace(/\D/g,"");
+  const displayARS  = numStrARS ? new Intl.NumberFormat("es-AR").format(Number(numStrARS)) : "";
+  const valido      = esUSD ? !!rawAmt && !isNaN(parseFloat(rawAmt)) && parseFloat(rawAmt)>0
+                            : !!numStrARS;
+  const amountFinal = esUSD ? rawAmt : numStrARS;
 
   return (
     <Modal titulo={meta?"Editar meta":"Nueva meta de ahorro"} onCerrar={onCerrar}>
@@ -1590,16 +1607,42 @@ function MetaModal({ meta, saving, onGuardar, onEliminar, onCerrar }) {
         <input type="text" placeholder="Ej: Viaje a Europa, Fondo de emergencia…"
           value={form.name} onChange={e=>set("name",e.target.value)}/>
       </Campo>
-      <Campo label="Monto objetivo">
-        <input className="input-monto" type="text" inputMode="numeric" placeholder="$ 0"
-          value={display?`$ ${display}`:""}
-          onChange={e=>set("target_amount",e.target.value.replace(/\D/g,""))}/>
+
+      {/* Selector de moneda */}
+      <Campo label="Moneda de la meta">
+        <div style={{display:"flex",gap:8}}>
+          {["ARS","USD"].map(m=>(
+            <button key={m} type="button"
+              style={{
+                flex:1, padding:"10px 0", borderRadius:"var(--radius)",
+                border:`2px solid ${form.moneda===m?"var(--accent)":"var(--border)"}`,
+                background:form.moneda===m?"var(--accent)":"var(--card)",
+                color:form.moneda===m?"#fff":"var(--text)",
+                fontWeight:700, cursor:"pointer", fontSize:15,
+              }}
+              onClick={()=>{set("moneda",m); set("target_amount","");}}>
+              {m==="ARS"?"$ ARS":"USD"}
+            </button>
+          ))}
+        </div>
       </Campo>
+
+      <Campo label={`Monto objetivo (${form.moneda})`}>
+        {esUSD
+          ? <input className="input-monto" type="number" inputMode="decimal" placeholder="USD 0"
+              value={rawAmt}
+              onChange={e=>set("target_amount",e.target.value)}/>
+          : <input className="input-monto" type="text" inputMode="numeric" placeholder="$ 0"
+              value={displayARS?`$ ${displayARS}`:""}
+              onChange={e=>set("target_amount",e.target.value.replace(/\D/g,""))}/>
+        }
+      </Campo>
+
       <Campo label="Fecha objetivo (opcional)">
         <input type="date" value={form.target_date} onChange={e=>set("target_date",e.target.value)}/>
       </Campo>
-      <button className="btn-primario" disabled={!form.name||!numStr||saving}
-        onClick={()=>onGuardar({...form,target_amount:numStr})}>
+      <button className="btn-primario" disabled={!form.name||!valido||saving}
+        onClick={()=>onGuardar({...form,target_amount:amountFinal})}>
         {saving?"Guardando…":meta?"Guardar cambios":"Crear meta"}
       </button>
       {onEliminar && <button className="btn-peligro" onClick={onEliminar} disabled={saving}>Eliminar meta</button>}
