@@ -418,17 +418,12 @@ export default function App() {
   }
 
   async function fetchCotizacionesYahoo(symbols) {
-    // v7 acepta múltiples símbolos en un solo request
-    const q = symbols.map(encodeURIComponent).join("%2C");
-    const yahooUrl = `https://query1.finance.yahoo.com/v7/finance/quote?symbols=${q}&fields=regularMarketPrice,currency`;
-    const yahoo2Url = `https://query2.finance.yahoo.com/v7/finance/quote?symbols=${q}&fields=regularMarketPrice,currency`;
-    const proxies = [
-      `https://corsproxy.io/?${encodeURIComponent(yahooUrl)}`,
-      `https://api.allorigins.win/raw?url=${encodeURIComponent(yahooUrl)}`,
-      `https://corsproxy.io/?${encodeURIComponent(yahoo2Url)}`,
-      `https://api.allorigins.win/raw?url=${encodeURIComponent(yahoo2Url)}`,
+    const urls = [
+      `/api/quote?symbols=${symbols.join(",")}`,
+      `https://query1.finance.yahoo.com/v7/finance/quote?symbols=${symbols.join(",")}&fields=regularMarketPrice,currency`,
+      `https://query2.finance.yahoo.com/v7/finance/quote?symbols=${symbols.join(",")}&fields=regularMarketPrice,currency`,
     ];
-    for (const url of proxies) {
+    for (const url of urls) {
       try {
         const r = await fetchConTimeout(url);
         if (!r.ok) continue;
