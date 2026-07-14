@@ -445,9 +445,13 @@ export default function App() {
     setSaving(true);
     try {
       const esEfectivo = data.tipo === "efectivo";
-      const activo = esEfectivo
-        ? (data.moneda_efectivo === "USD" ? "EFECTIVO_USD" : "EFECTIVO_ARS")
-        : data.activo.toUpperCase().trim();
+      let activo;
+      if (esEfectivo) {
+        activo = data.moneda_efectivo === "USD" ? "EFECTIVO_USD" : "EFECTIVO_ARS";
+      } else {
+        const base = data.activo.toUpperCase().trim().replace(/\.BA$/,"");
+        activo = data.moneda_activo === "ARS" ? `${base}.BA` : base;
+      }
       // Para efectivo, si ya existe un registro del mismo tipo lo reemplazamos
       let id = editing?.id;
       if (esEfectivo && !id) {
@@ -1951,8 +1955,16 @@ function InversionesTab({ inversiones, cotizaciones, dolar, loadingCot, onActual
 function InversionModal({ inversion, saving, onGuardar, onEliminar, onCerrar }) {
   const esEfectivoExistente = inversion && EFECTIVO_TICKERS.includes(inversion.activo);
   const [tipo, setTipo] = useState(esEfectivoExistente ? "efectivo" : "activo");
+
+  // Detectar moneda del activo existente al editar
+  const activoBase = inversion?.activo?.toUpperCase().endsWith(".BA")
+    ? inversion.activo.slice(0,-3)
+    : (inversion?.activo || "");
+  const monedaInicial = inversion?.activo?.toUpperCase().endsWith(".BA") ? "ARS" : "USD";
+
   const [form, setForm] = useState({
-    activo:          esEfectivoExistente ? "" : (inversion?.activo || ""),
+    activo:          esEfectivoExistente ? "" : activoBase,
+    moneda_activo:   esEfectivoExistente ? "USD" : monedaInicial,
     cantidad:        inversion?.cantidad ? String(inversion.cantidad) : "",
     precio_compra:   inversion?.precio_compra && !esEfectivoExistente ? String(inversion.precio_compra) : "",
     fecha_compra:    inversion?.fecha_compra || todayStr(),
@@ -1961,7 +1973,6 @@ function InversionModal({ inversion, saving, onGuardar, onEliminar, onCerrar }) 
   const set = (k,v) => setForm(f=>({...f,[k]:v}));
 
   const esActivo  = tipo === "activo";
-  const monedaLabel = form.activo.toUpperCase().endsWith(".BA") ? "ARS" : "USD";
   const esValido  = esActivo
     ? (form.activo && Number(form.cantidad)>0 && Number(form.precio_compra)>0)
     : Number(form.cantidad)>0;
@@ -1985,18 +1996,38 @@ function InversionModal({ inversion, saving, onGuardar, onEliminar, onCerrar }) 
 
       {esActivo ? (
         <>
-          <Campo label="Ticker">
-            <input type="text" placeholder="Ej: AAPL.BA · GGAL.BA · AL30.BA · GD30"
-              value={form.activo} onChange={e=>set("activo",e.target.value.toUpperCase())}/>
-            <div style={{fontSize:11,color:"var(--muted)",marginTop:6,lineHeight:1.6}}>
-              Sufijo .BA = precio en ARS (CEDEARs, acciones arg., bonos en pesos). Sin sufijo = USD (bonos hard, acciones exterior).
+          {/* Moneda del activo */}
+          <Campo label="Moneda del activo">
+            <div style={{display:"flex",gap:8}}>
+              {["ARS","USD"].map(m=>(
+                <button key={m} type="button"
+                  style={{
+                    flex:1, padding:"10px 0", borderRadius:"var(--radius)",
+                    border:`2px solid ${form.moneda_activo===m?"var(--accent)":"var(--border)"}`,
+                    background:form.moneda_activo===m?"var(--accent)":"var(--card)",
+                    color:form.moneda_activo===m?"#fff":"var(--text)",
+                    fontWeight:700, cursor:"pointer", fontSize:15,
+                  }}
+                  onClick={()=>set("moneda_activo",m)}>
+                  {m==="ARS"?"$ ARS":"USD"}
+                </button>
+              ))}
             </div>
+            <div style={{fontSize:11,color:"var(--muted)",marginTop:6,lineHeight:1.6}}>
+              {form.moneda_activo==="ARS"
+                ? "CEDEARs, acciones argentinas, bonos en pesos"
+                : "Acciones del exterior, bonos hard dollar"}
+            </div>
+          </Campo>
+          <Campo label="Ticker">
+            <input type="text" placeholder={form.moneda_activo==="ARS"?"Ej: GGAL · AAPL · AL30":"Ej: AAPL · GD30 · MELI"}
+              value={form.activo} onChange={e=>set("activo",e.target.value.toUpperCase().replace(".BA",""))}/>
           </Campo>
           <Campo label="Cantidad (unidades)">
             <input type="number" inputMode="decimal" placeholder="Ej: 10"
               value={form.cantidad} onChange={e=>set("cantidad",e.target.value)}/>
           </Campo>
-          <Campo label={`Precio de compra (${monedaLabel})`}>
+          <Campo label={`Precio de compra (${form.moneda_activo})`}>
             <input type="number" inputMode="decimal" placeholder="Ej: 5000"
               value={form.precio_compra} onChange={e=>set("precio_compra",e.target.value)}/>
           </Campo>
