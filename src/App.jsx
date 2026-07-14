@@ -185,10 +185,18 @@ export default function App() {
   const diaClose = Number(settings.diaClose) || null;
   const sueldo   = Number(settings.sueldo)   || 0;
 
-  function guardarSettings(data) {
+  async function guardarSettings(data) {
     const next = { ...settings, ...data };
     setSettings(next);
     localStorage.setItem("mg_settings", JSON.stringify(next));
+    try {
+      await dbUpsert("user_settings", [{
+        id: "default",
+        sueldo: Number(next.sueldo) || 0,
+        dia_close: Number(next.diaClose) || null,
+        tema: next.tema || "dark",
+      }]);
+    } catch {}
   }
   function cambiarVista(v) {
     setVista(v);
@@ -197,16 +205,26 @@ export default function App() {
   function navTo(id) { setTab(id); setDrawer(false); }
 
   async function recargar() {
-    const [exp, fix, met, con, inv, cot] = await Promise.all([
+    const [exp, fix, met, con, inv, cot, cfg] = await Promise.all([
       dbGet("expenses",              { col:"date",          asc:false }),
       dbGet("fixed_expenses",        { col:"created_at",    asc:true  }),
       dbGet("savings_goals",         { col:"created_at",    asc:true  }),
       dbGet("savings_contributions", { col:"date",          asc:false }),
       dbGet("inversiones",           { col:"fecha_compra",  asc:true  }),
       dbGet("cotizaciones_cache",    { col:"updated_at",    asc:false }),
+      dbGet("user_settings",         { col:"id",            asc:true  }),
     ]);
     setGastos(exp); setFijos(fix); setMetas(met); setContribuciones(con);
     setInversiones(inv); setCotizaciones(cot);
+    if (cfg?.length > 0) {
+      const row = cfg[0];
+      const fromDB = { sueldo: row.sueldo || 0, diaClose: row.dia_close || null, tema: row.tema || "dark" };
+      setSettings(prev => {
+        const merged = { ...prev, ...fromDB };
+        localStorage.setItem("mg_settings", JSON.stringify(merged));
+        return merged;
+      });
+    }
     return { exp, fix, met, con, inv, cot };
   }
 
