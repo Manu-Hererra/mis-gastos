@@ -1804,8 +1804,8 @@ function PickerMedio({ value, onChange }) {
 const EFECTIVO_TICKERS = ["EFECTIVO_ARS","EFECTIVO_USD"];
 
 function InversionesTab({ inversiones, cotizaciones, dolar, loadingCot, onActualizar, onGuardarPrecio, onAgregar, onEditar }) {
-  const [editandoPrecio, setEditandoPrecio] = React.useState(null); // activo ticker
-  const [precioInput, setPrecioInput] = React.useState("");
+  const [editandoPrecio, setEditandoPrecio] = useState(null);
+  const [precioInput, setPrecioInput] = useState("");
   const esARS    = (activo) => activo.toUpperCase().endsWith(".BA");
   const cotMap   = Object.fromEntries(cotizaciones.map(c=>[c.activo,c]));
   const aARS     = (precio, moneda) => moneda==="USD" ? precio*(dolar?.mep||0) : precio;
