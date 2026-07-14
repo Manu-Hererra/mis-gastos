@@ -152,12 +152,13 @@ const getCat   = id => CATS.find(c=>c.id===id)   ?? CATS[CATS.length-1];
 const getMedio = id => MEDIOS.find(m=>m.id===id) ?? MEDIOS[0];
 
 const NAV_ITEMS = [
-  { id:"home",     icon:"🏠", label:"Inicio"         },
-  { id:"gastos",   icon:"💸", label:"Gastos del mes"  },
-  { id:"fijos",    icon:"🔁", label:"Gastos fijos"    },
-  { id:"medios",   icon:"💳", label:"Medios de pago"  },
-  { id:"analisis", icon:"📊", label:"Análisis"        },
-  { id:"metas",    icon:"🎯", label:"Metas de ahorro" },
+  { id:"home",        icon:"🏠", label:"Inicio"          },
+  { id:"gastos",      icon:"💸", label:"Gastos del mes"   },
+  { id:"fijos",       icon:"🔁", label:"Gastos fijos"     },
+  { id:"medios",      icon:"💳", label:"Medios de pago"   },
+  { id:"analisis",    icon:"📊", label:"Análisis"         },
+  { id:"metas",       icon:"🎯", label:"Metas de ahorro"  },
+  { id:"inversiones", icon:"💼", label:"Inversiones"      },
 ];
 
 // ─── App ──────────────────────────────────────────────────────────────────────
@@ -170,6 +171,9 @@ export default function App() {
   const [fijos,          setFijos]          = useState([]);
   const [metas,          setMetas]          = useState([]);
   const [contribuciones, setContribuciones] = useState([]);
+  const [inversiones,    setInversiones]    = useState([]);
+  const [cotizaciones,   setCotizaciones]   = useState([]);
+  const [loadingCot,     setLoadingCot]     = useState(false);
   const [dolar,          setDolar]          = useState(null);
   const [online,         setOnline]         = useState(navigator.onLine);
   const [modal,          setModal]          = useState(null);
@@ -193,14 +197,17 @@ export default function App() {
   function navTo(id) { setTab(id); setDrawer(false); }
 
   async function recargar() {
-    const [exp, fix, met, con] = await Promise.all([
-      dbGet("expenses",              { col:"date",       asc:false }),
-      dbGet("fixed_expenses",        { col:"created_at", asc:true  }),
-      dbGet("savings_goals",         { col:"created_at", asc:true  }),
-      dbGet("savings_contributions", { col:"date",        asc:false }),
+    const [exp, fix, met, con, inv, cot] = await Promise.all([
+      dbGet("expenses",              { col:"date",          asc:false }),
+      dbGet("fixed_expenses",        { col:"created_at",    asc:true  }),
+      dbGet("savings_goals",         { col:"created_at",    asc:true  }),
+      dbGet("savings_contributions", { col:"date",          asc:false }),
+      dbGet("inversiones",           { col:"fecha_compra",  asc:true  }),
+      dbGet("cotizaciones_cache",    { col:"updated_at",    asc:false }),
     ]);
     setGastos(exp); setFijos(fix); setMetas(met); setContribuciones(con);
-    return { exp, fix, met, con };
+    setInversiones(inv); setCotizaciones(cot);
+    return { exp, fix, met, con, inv, cot };
   }
 
   useEffect(()=>{
@@ -401,6 +408,59 @@ export default function App() {
     setSaving(false);
   }
 
+  // ─── Inversiones ─────────────────────────────────────────────────────────────
+  async function fetchPrecioYahoo(ticker) {
+    const yahooUrl = `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(ticker)}?interval=1d&range=1d`;
+    for (const url of [`https://corsproxy.io/?${encodeURIComponent(yahooUrl)}`, yahooUrl]) {
+      try {
+        const r = await fetch(url);
+        if (!r.ok) continue;
+        const d = await r.json();
+        const result = d?.chart?.result?.[0];
+        if (!result?.meta?.regularMarketPrice) continue;
+        return { precio: result.meta.regularMarketPrice, moneda: result.meta.currency || "USD" };
+      } catch {}
+    }
+    return null;
+  }
+
+  async function actualizarCotizaciones() {
+    setLoadingCot(true);
+    try {
+      const activos = [...new Set(inversiones.map(i=>i.activo))];
+      const rows = [];
+      for (const activo of activos) {
+        const res = await fetchPrecioYahoo(activo);
+        if (res) rows.push({ activo, precio_actual: res.precio, moneda: res.moneda, updated_at: new Date().toISOString() });
+      }
+      if (rows.length > 0) await dbUpsert("cotizaciones_cache", rows);
+      await recargar();
+    } catch(e) { alert("Error al actualizar cotizaciones: " + e.message); }
+    setLoadingCot(false);
+  }
+
+  async function guardarInversion(data) {
+    setSaving(true);
+    try {
+      await dbUpsert("inversiones", [{
+        id: editing?.id || uid(),
+        activo: data.activo.toUpperCase().trim(),
+        cantidad: Number(data.cantidad),
+        precio_compra: Number(data.precio_compra),
+        fecha_compra: data.fecha_compra,
+      }]);
+      await recargar(); cerrarModal();
+    } catch(e) { alert("Error: " + e.message); }
+    setSaving(false);
+  }
+
+  async function eliminarInversion(id) {
+    setSaving(true);
+    try { await dbDelete("inversiones", id); await recargar(); cerrarModal(); }
+    catch(e) { alert(e.message); }
+    setSaving(false);
+  }
+
   function abrirModal(tipo, item=null) { setEditing(item); setModal(tipo); }
   function cerrarModal()               { setModal(null); setEditing(null); }
 
@@ -408,6 +468,19 @@ export default function App() {
 
   const gastosMesActual = gastos.filter(e=>dateToMonth(e.date)===currentMonth());
   const totalMesActual  = gastosMesActual.reduce((s,e)=>s+Number(e.amount),0);
+
+  // Valor total de la cartera en ARS (cotizaciones si hay, sino costo)
+  const _cotMap = Object.fromEntries(cotizaciones.map(c=>[c.activo,c]));
+  const valorCartera = inversiones.reduce((sum,inv)=>{
+    const esARS = inv.activo.toUpperCase().endsWith(".BA");
+    const cot   = _cotMap[inv.activo];
+    if (cot?.precio_actual) {
+      const precio = cot.moneda==="USD" ? cot.precio_actual*(dolar?.mep||0) : cot.precio_actual;
+      return sum + precio * Number(inv.cantidad);
+    }
+    const precio = esARS ? Number(inv.precio_compra) : Number(inv.precio_compra)*(dolar?.mep||0);
+    return sum + precio * Number(inv.cantidad);
+  }, 0);
 
   return (
     <>
@@ -464,12 +537,13 @@ export default function App() {
           </header>
 
           <div className="content">
-            {tab==="home"     && <HomeTab gastosMes={gastosMesActual} todosGastos={gastos} totalMes={totalMesActual} sueldo={sueldo} fijos={fijos} onNavTo={navTo} onAgregar={()=>abrirModal("gasto")}/>}
-            {tab==="gastos"   && <GastosTab gastos={gastosPeriodo} label={labelPeriod} total={totalPeriodo} vista={vista} diaClose={diaClose} esActual={esActual} onPrev={irPrev} onNext={irNext} onCambiarVista={cambiarVista} onAgregar={()=>abrirModal("gasto")} onEditar={e=>abrirModal("gasto",e)}/>}
-            {tab==="fijos"    && <FijosTab fijos={fijos} onAgregar={()=>abrirModal("fijo")} onEditar={f=>abrirModal("fijo",f)}/>}
-            {tab==="medios"   && <MediosTab gastos={gastosPeriodo} total={totalPeriodo} label={labelPeriod} esActual={esActual} onPrev={irPrev} onNext={irNext}/>}
-            {tab==="analisis" && <AnalisisTab gastos={gastosPeriodo} todosGastos={gastos} total={totalPeriodo} label={labelPeriod} sueldo={sueldo} esActual={esActual} onPrev={irPrev} onNext={irNext} onEditarSueldo={()=>abrirModal("settings")} dolar={dolar} diaClose={diaClose} period={period} vista={vista}/>}
-            {tab==="metas"    && <MetasTab metas={metas} contribuciones={contribuciones} saving={saving} onNuevaMeta={()=>abrirModal("meta")} onEditarMeta={m=>abrirModal("meta",m)} onEliminarMeta={id=>eliminarMeta(id)} onAgregarAporte={m=>abrirModal("contribucion",m)} onEliminarAporte={id=>eliminarContribucion(id)}/>}
+            {tab==="home"        && <HomeTab gastosMes={gastosMesActual} todosGastos={gastos} totalMes={totalMesActual} sueldo={sueldo} fijos={fijos} valorCartera={valorCartera} onNavTo={navTo} onAgregar={()=>abrirModal("gasto")}/>}
+            {tab==="gastos"      && <GastosTab gastos={gastosPeriodo} label={labelPeriod} total={totalPeriodo} vista={vista} diaClose={diaClose} esActual={esActual} onPrev={irPrev} onNext={irNext} onCambiarVista={cambiarVista} onAgregar={()=>abrirModal("gasto")} onEditar={e=>abrirModal("gasto",e)}/>}
+            {tab==="fijos"       && <FijosTab fijos={fijos} onAgregar={()=>abrirModal("fijo")} onEditar={f=>abrirModal("fijo",f)}/>}
+            {tab==="medios"      && <MediosTab gastos={gastosPeriodo} total={totalPeriodo} label={labelPeriod} esActual={esActual} onPrev={irPrev} onNext={irNext}/>}
+            {tab==="analisis"    && <AnalisisTab gastos={gastosPeriodo} todosGastos={gastos} total={totalPeriodo} label={labelPeriod} sueldo={sueldo} esActual={esActual} onPrev={irPrev} onNext={irNext} onEditarSueldo={()=>abrirModal("settings")} dolar={dolar} diaClose={diaClose} period={period} vista={vista}/>}
+            {tab==="metas"       && <MetasTab metas={metas} contribuciones={contribuciones} saving={saving} onNuevaMeta={()=>abrirModal("meta")} onEditarMeta={m=>abrirModal("meta",m)} onEliminarMeta={id=>eliminarMeta(id)} onAgregarAporte={m=>abrirModal("contribucion",m)} onEliminarAporte={id=>eliminarContribucion(id)}/>}
+            {tab==="inversiones" && <InversionesTab inversiones={inversiones} cotizaciones={cotizaciones} dolar={dolar} loadingCot={loadingCot} onActualizar={actualizarCotizaciones} onAgregar={()=>abrirModal("inversion")} onEditar={i=>abrirModal("inversion",i)}/>}
           </div>
         </div>
       </div>
@@ -479,12 +553,13 @@ export default function App() {
       {modal==="meta"         && <MetaModal         meta={editing}   saving={saving} onGuardar={guardarMeta}        onEliminar={editing?()=>eliminarMeta(editing.id):null}    onCerrar={cerrarModal}/>}
       {modal==="contribucion" && <ContribucionModal meta={editing}   saving={saving} onGuardar={guardarContribucion}                                                           onCerrar={cerrarModal}/>}
       {modal==="settings"     && <SettingsModal settings={settings} onGuardar={guardarSettings} onCerrar={cerrarModal}/>}
+      {modal==="inversion"    && <InversionModal inversion={editing} saving={saving} onGuardar={guardarInversion} onEliminar={editing?()=>eliminarInversion(editing.id):null} onCerrar={cerrarModal}/>}
     </>
   );
 }
 
 // ─── Home ─────────────────────────────────────────────────────────────────────
-function HomeTab({ gastosMes, todosGastos, totalMes, sueldo, fijos, onNavTo, onAgregar }) {
+function HomeTab({ gastosMes, todosGastos, totalMes, sueldo, fijos, valorCartera, onNavTo, onAgregar }) {
   const [saludo, icono] = greeting();
   const ahorro   = sueldo - totalMes;
   const pctGasto = sueldo > 0 ? Math.min(100,(totalMes/sueldo)*100) : 0;
@@ -622,6 +697,29 @@ function HomeTab({ gastosMes, todosGastos, totalMes, sueldo, fijos, onNavTo, onA
         </>
       )}
 
+
+      {/* Patrimonio total */}
+      {valorCartera > 0 && (
+        <>
+          <div className="home-section-title">Patrimonio</div>
+          <div className="lista-card" style={{marginBottom:20}}>
+            <div className="patrimonio-fila">
+              <span>💸 Gastos del mes</span>
+              <span style={{color:"var(--danger)",fontWeight:700}}>-{formatARS(totalMes)}</span>
+            </div>
+            <div className="patrimonio-fila">
+              <span>💼 Cartera de inversiones</span>
+              <span style={{color:"var(--success)",fontWeight:700}}>{formatARS(valorCartera)}</span>
+            </div>
+            {sueldo > 0 && (
+              <div className="patrimonio-fila" style={{borderTop:"1px solid var(--border)",fontWeight:700}}>
+                <span>Patrimonio estimado</span>
+                <span style={{color:"var(--accent2)"}}>{formatARS(sueldo - totalMes + valorCartera)}</span>
+              </div>
+            )}
+          </div>
+        </>
+      )}
 
       {gastosMes.length===0 && (
         <div className="vacio" style={{paddingTop:20}}>
@@ -1543,6 +1641,188 @@ function PickerMedio({ value, onChange }) {
   );
 }
 
+// ─── Inversiones ─────────────────────────────────────────────────────────────
+function InversionesTab({ inversiones, cotizaciones, dolar, loadingCot, onActualizar, onAgregar, onEditar }) {
+  const esARS    = (activo) => activo.toUpperCase().endsWith(".BA");
+  const cotMap   = Object.fromEntries(cotizaciones.map(c=>[c.activo,c]));
+  const aARS     = (precio, moneda) => moneda==="USD" ? precio*(dolar?.mep||0) : precio;
+
+  // Agrupar por activo y calcular métricas
+  const activosMap = {};
+  inversiones.forEach(inv=>{
+    if (!activosMap[inv.activo]) activosMap[inv.activo]=[];
+    activosMap[inv.activo].push(inv);
+  });
+  const posiciones = Object.entries(activosMap).map(([activo,lotes])=>{
+    const moneda       = esARS(activo) ? "ARS" : "USD";
+    const cantTotal    = lotes.reduce((s,l)=>s+Number(l.cantidad),0);
+    const costoNativo  = lotes.reduce((s,l)=>s+Number(l.cantidad)*Number(l.precio_compra),0);
+    const precioPromedio = costoNativo/cantTotal;
+    const cot          = cotMap[activo];
+    const costoARS     = aARS(costoNativo, moneda);
+    const valorActualARS = cot?.precio_actual ? aARS(cot.precio_actual*cantTotal, cot.moneda||moneda) : null;
+    const gananciaARS  = valorActualARS!==null ? valorActualARS-costoARS : null;
+    const gananciaPct  = gananciaARS!==null && costoARS>0 ? (gananciaARS/costoARS)*100 : null;
+    return { activo, moneda, cantTotal, costoNativo, precioPromedio, cot, costoARS, valorActualARS, gananciaARS, gananciaPct, lotes };
+  }).sort((a,b)=>(b.valorActualARS??b.costoARS)-(a.valorActualARS??a.costoARS));
+
+  const valorTotal  = posiciones.reduce((s,p)=>s+(p.valorActualARS??p.costoARS),0);
+  const costoTotal  = posiciones.reduce((s,p)=>s+p.costoARS,0);
+  const ganTotal    = posiciones.filter(p=>p.gananciaARS!==null).reduce((s,p)=>s+p.gananciaARS,0);
+  const ganTotalPct = costoTotal>0?(ganTotal/costoTotal)*100:0;
+  const hayCot      = posiciones.some(p=>p.valorActualARS!==null);
+
+  const lastUpd = cotizaciones.length>0
+    ? cotizaciones.reduce((mx,c)=>c.updated_at>mx?c.updated_at:mx, cotizaciones[0].updated_at) : null;
+  const lastLabel = lastUpd
+    ? new Date(lastUpd).toLocaleTimeString("es-AR",{hour:"2-digit",minute:"2-digit"}) : null;
+
+  return (
+    <>
+      <div className="page-title">Mi Cartera</div>
+
+      {/* Resumen general */}
+      {posiciones.length>0 && (
+        <div className="hero-card">
+          <div className="hero-label">Valor total de la cartera</div>
+          <div className="hero-amount">{formatARS(valorTotal)}</div>
+          {hayCot && (
+            <div style={{display:"flex",gap:20,marginTop:12}}>
+              <div>
+                <div style={{fontSize:11,color:"var(--muted)"}}>Invertido</div>
+                <div style={{fontSize:15,fontWeight:700}}>{formatARS(costoTotal)}</div>
+              </div>
+              <div>
+                <div style={{fontSize:11,color:"var(--muted)"}}>Resultado</div>
+                <div style={{fontSize:15,fontWeight:700,color:ganTotal>=0?"var(--success)":"var(--danger)"}}>
+                  {ganTotal>=0?"+":""}{formatARS(ganTotal)}{" "}
+                  <span style={{fontSize:11}}>({ganTotalPct>=0?"+":""}{ganTotalPct.toFixed(1)}%)</span>
+                </div>
+              </div>
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* Actualizar cotizaciones */}
+      <div className="inv-refresh-row">
+        <span className="inv-update-txt">
+          {lastLabel ? `Cotizaciones al ${lastLabel}` : "Sin cotizaciones cargadas"}
+        </span>
+        <button className="inv-refresh-btn" onClick={onActualizar} disabled={loadingCot||inversiones.length===0}>
+          {loadingCot?"Actualizando…":"↻ Actualizar"}
+        </button>
+      </div>
+
+      {/* Posiciones */}
+      {posiciones.length===0
+        ? <Vacio icon="💼" titulo="Sin posiciones" sub="Tocá + para cargar tu primera inversión"/>
+        : posiciones.map(p=>{
+          const peso = valorTotal>0?((p.valorActualARS??p.costoARS)/valorTotal*100):0;
+          const signo = p.moneda==="USD"?"USD ":"$";
+          return (
+            <div key={p.activo} className="inv-card">
+              <div className="inv-card-header">
+                <div>
+                  <div className="inv-ticker">{p.activo}</div>
+                  <div className="inv-meta">
+                    {p.cantTotal.toLocaleString("es-AR",{maximumFractionDigits:4})} unidades ·
+                    prom. {signo}{p.precioPromedio.toLocaleString("es-AR",{maximumFractionDigits:2})}
+                  </div>
+                </div>
+                <div style={{textAlign:"right"}}>
+                  <div className="inv-valor">{formatARS(p.valorActualARS??p.costoARS)}</div>
+                  <div className="inv-peso">{peso.toFixed(1)}% de la cartera</div>
+                </div>
+              </div>
+
+              {p.gananciaARS!==null && (
+                <div className="inv-resultado" style={{color:p.gananciaARS>=0?"var(--success)":"var(--danger)"}}>
+                  {p.gananciaARS>=0?"+":""}{formatARS(p.gananciaARS)}{" "}
+                  ({p.gananciaPct>=0?"+":""}{p.gananciaPct.toFixed(1)}%)
+                  <span style={{color:"var(--muted)",fontSize:11,fontWeight:400,marginLeft:6}}>
+                    vs {formatARS(p.costoARS)} invertido
+                  </span>
+                </div>
+              )}
+
+              <div className="barra-track" style={{marginTop:10}}>
+                <div className="barra-fill" style={{
+                  width:`${peso.toFixed(0)}%`,
+                  background:p.gananciaARS===null?"rgba(59,130,246,.4)":p.gananciaARS>=0?"var(--success)":"var(--danger)"
+                }}/>
+              </div>
+
+              {/* Lotes de compra */}
+              {p.lotes.length>0 && (
+                <div className="inv-lotes">
+                  {p.lotes.map(l=>(
+                    <div key={l.id} className="inv-lote" onClick={()=>onEditar(l)}>
+                      <span>{new Date(l.fecha_compra+"T12:00:00").toLocaleDateString("es-AR",{day:"numeric",month:"short",year:"2-digit"})}</span>
+                      <span>{Number(l.cantidad)} u. × {signo}{Number(l.precio_compra).toLocaleString("es-AR",{maximumFractionDigits:2})}</span>
+                      <span>✏️</span>
+                    </div>
+                  ))}
+                </div>
+              )}
+
+              {p.cot && (
+                <div style={{fontSize:11,color:"var(--muted)",marginTop:8,borderTop:"1px solid var(--border)",paddingTop:8}}>
+                  Precio actual: {p.cot.moneda==="USD"?"USD":""} {Number(p.cot.precio_actual).toLocaleString("es-AR",{maximumFractionDigits:2})}
+                  {p.cot.moneda==="USD" && dolar?.mep && (
+                    <span> ≈ {formatARS(p.cot.precio_actual*dolar.mep)} al MEP</span>
+                  )}
+                </div>
+              )}
+            </div>
+          );
+        })
+      }
+
+      <button className="fab" onClick={onAgregar}>+</button>
+    </>
+  );
+}
+
+function InversionModal({ inversion, saving, onGuardar, onEliminar, onCerrar }) {
+  const [form, setForm] = useState({
+    activo:        inversion?.activo        || "",
+    cantidad:      inversion?.cantidad      ? String(inversion.cantidad)      : "",
+    precio_compra: inversion?.precio_compra ? String(inversion.precio_compra) : "",
+    fecha_compra:  inversion?.fecha_compra  || todayStr(),
+  });
+  const set     = (k,v) => setForm(f=>({...f,[k]:v}));
+  const esValido = form.activo && Number(form.cantidad)>0 && Number(form.precio_compra)>0;
+  const monedaLabel = form.activo.toUpperCase().endsWith(".BA") ? "ARS" : "USD";
+
+  return (
+    <Modal titulo={inversion?"Editar posición":"Nueva posición"} onCerrar={onCerrar}>
+      <Campo label="Activo (ticker)">
+        <input type="text" placeholder="Ej: AAPL.BA  GGAL.BA  AAPL  MSFT"
+          value={form.activo} onChange={e=>set("activo",e.target.value.toUpperCase())}/>
+        <div style={{fontSize:11,color:"var(--muted)",marginTop:6,lineHeight:1.6}}>
+          Sufijo .BA → precio en ARS (CEDEARs / acciones arg.). Sin sufijo → precio en USD.
+        </div>
+      </Campo>
+      <Campo label="Cantidad (unidades)">
+        <input type="number" inputMode="decimal" placeholder="Ej: 10"
+          value={form.cantidad} onChange={e=>set("cantidad",e.target.value)}/>
+      </Campo>
+      <Campo label={`Precio de compra (${monedaLabel})`}>
+        <input type="number" inputMode="decimal" placeholder="Ej: 5000"
+          value={form.precio_compra} onChange={e=>set("precio_compra",e.target.value)}/>
+      </Campo>
+      <Campo label="Fecha de compra">
+        <input type="date" value={form.fecha_compra} onChange={e=>set("fecha_compra",e.target.value)}/>
+      </Campo>
+      <button className="btn-primario" disabled={!esValido||saving} onClick={()=>onGuardar(form)}>
+        {saving?"Guardando…":inversion?"Guardar cambios":"Agregar posición"}
+      </button>
+      {onEliminar && <button className="btn-peligro" onClick={onEliminar} disabled={saving}>Eliminar posición</button>}
+    </Modal>
+  );
+}
+
 // ─── CSS ──────────────────────────────────────────────────────────────────────
 const CSS = `
   *, *::before, *::after { box-sizing:border-box; margin:0; padding:0; }
@@ -1748,6 +2028,27 @@ const CSS = `
   .cat-row    { padding:11px 0; border-bottom:1px solid rgba(59,130,246,.06); }
   .cat-row:last-child { border-bottom:none; }
   .cat-row-top { display:flex; justify-content:space-between; align-items:center; font-size:14px; }
+
+  /* ── Inversiones ── */
+  .inv-refresh-row { display:flex; justify-content:space-between; align-items:center; margin-bottom:14px; gap:8px; }
+  .inv-update-txt { font-size:11px; color:var(--muted); }
+  .inv-refresh-btn { padding:8px 16px; border-radius:99px; font-size:12px; font-weight:700; background:rgba(59,130,246,.1); color:var(--accent2); border:1px solid rgba(59,130,246,.2); flex-shrink:0; }
+  .inv-refresh-btn:active { opacity:.7; }
+  .inv-refresh-btn:disabled { opacity:.4; cursor:default; }
+  .inv-card { background:var(--card); border:1px solid var(--border); border-radius:var(--r); padding:18px; margin-bottom:12px; }
+  .inv-card-header { display:flex; justify-content:space-between; align-items:flex-start; gap:10px; margin-bottom:8px; }
+  .inv-ticker { font-size:20px; font-weight:800; letter-spacing:-.5px; }
+  .inv-meta { font-size:11px; color:var(--muted); margin-top:3px; line-height:1.4; }
+  .inv-valor { font-size:18px; font-weight:800; letter-spacing:-.5px; }
+  .inv-peso { font-size:11px; color:var(--muted); margin-top:2px; text-align:right; }
+  .inv-resultado { font-size:13px; font-weight:700; margin-top:8px; }
+  .inv-lotes { border-top:1px solid var(--border); margin-top:12px; padding-top:10px; display:flex; flex-direction:column; gap:6px; }
+  .inv-lote { display:flex; justify-content:space-between; align-items:center; font-size:12px; color:var(--muted); padding:7px 10px; border-radius:8px; background:var(--card2); cursor:pointer; gap:8px; }
+  .inv-lote:active { opacity:.7; }
+
+  /* ── Patrimonio home ── */
+  .patrimonio-fila { display:flex; justify-content:space-between; align-items:center; padding:13px 16px; font-size:14px; border-bottom:1px solid rgba(59,130,246,.06); }
+  .patrimonio-fila:last-child { border-bottom:none; }
 
   /* ── Gastos hormiga ── */
   .hormiga-row { display:flex; align-items:center; gap:12px; padding:10px 0; border-bottom:1px solid rgba(59,130,246,.06); }
