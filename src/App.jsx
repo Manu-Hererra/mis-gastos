@@ -1874,13 +1874,38 @@ function InversionesTab({ inversiones, cotizaciones, dolar, loadingCot, onActual
                 <div>
                   <div className="inv-ticker">{p.activo}</div>
                   <div className="inv-meta">
-                    {p.cantTotal.toLocaleString("es-AR",{maximumFractionDigits:4})} unidades ·
-                    prom. {signo}{p.precioPromedio.toLocaleString("es-AR",{maximumFractionDigits:2})}
+                    {p.cantTotal.toLocaleString("es-AR",{maximumFractionDigits:4})} unidades
                   </div>
                 </div>
                 <div style={{textAlign:"right"}}>
                   <div className="inv-valor">{formatARS(p.valorActualARS??p.costoARS)}</div>
                   <div className="inv-peso">{peso.toFixed(1)}% de la cartera</div>
+                </div>
+              </div>
+
+              {/* Fila de precios */}
+              <div style={{display:"flex",gap:8,marginTop:10}}>
+                <div style={{flex:1,background:"var(--card2)",borderRadius:"var(--radius)",padding:"8px 12px"}}>
+                  <div style={{fontSize:10,color:"var(--muted)",marginBottom:2}}>Precio compra prom.</div>
+                  <div style={{fontSize:14,fontWeight:700}}>
+                    {signo}{p.precioPromedio.toLocaleString("es-AR",{maximumFractionDigits:2})}
+                  </div>
+                </div>
+                <div style={{flex:1,background:"var(--card2)",borderRadius:"var(--radius)",padding:"8px 12px"}}>
+                  <div style={{fontSize:10,color:"var(--muted)",marginBottom:2}}>Precio actual</div>
+                  {p.cot?.precio_actual
+                    ? <>
+                        <div style={{fontSize:14,fontWeight:700}}>
+                          {p.cot.moneda==="USD"?"USD ":""}{Number(p.cot.precio_actual).toLocaleString("es-AR",{maximumFractionDigits:2})}
+                        </div>
+                        {p.cot.moneda==="USD" && dolar?.mep && (
+                          <div style={{fontSize:10,color:"var(--muted)"}}>
+                            ≈ {formatARS(p.cot.precio_actual*dolar.mep)}
+                          </div>
+                        )}
+                      </>
+                    : <div style={{fontSize:12,color:"var(--muted)"}}>Sin cotizar</div>
+                  }
                 </div>
               </div>
 
@@ -1911,15 +1936,6 @@ function InversionesTab({ inversiones, cotizaciones, dolar, loadingCot, onActual
                       <span>✏️</span>
                     </div>
                   ))}
-                </div>
-              )}
-
-              {p.cot && (
-                <div style={{fontSize:11,color:"var(--muted)",marginTop:8,borderTop:"1px solid var(--border)",paddingTop:8}}>
-                  Precio actual: {p.cot.moneda==="USD"?"USD":""} {Number(p.cot.precio_actual).toLocaleString("es-AR",{maximumFractionDigits:2})}
-                  {p.cot.moneda==="USD" && dolar?.mep && (
-                    <span> ≈ {formatARS(p.cot.precio_actual*dolar.mep)} al MEP</span>
-                  )}
                 </div>
               )}
             </div>
