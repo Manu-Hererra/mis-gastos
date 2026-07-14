@@ -412,9 +412,14 @@ export default function App() {
   // ─── Inversiones ─────────────────────────────────────────────────────────────
   async function fetchPrecioYahoo(ticker) {
     const yahooUrl = `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(ticker)}?interval=1d&range=1d`;
-    for (const url of [`https://corsproxy.io/?${encodeURIComponent(yahooUrl)}`, yahooUrl]) {
+    const proxies = [
+      `https://corsproxy.io/?${encodeURIComponent(yahooUrl)}`,
+      `https://api.allorigins.win/raw?url=${encodeURIComponent(yahooUrl)}`,
+      yahooUrl,
+    ];
+    for (const url of proxies) {
       try {
-        const r = await fetch(url);
+        const r = await fetch(url, { signal: AbortSignal.timeout(8000) });
         if (!r.ok) continue;
         const d = await r.json();
         const result = d?.chart?.result?.[0];
@@ -431,12 +436,19 @@ export default function App() {
       const EFECTIVO_TICKERS = ["EFECTIVO_ARS","EFECTIVO_USD"];
       const activos = [...new Set(inversiones.map(i=>i.activo))].filter(a=>!EFECTIVO_TICKERS.includes(a));
       const rows = [];
+      const fallidos = [];
       for (const activo of activos) {
         const res = await fetchPrecioYahoo(activo);
-        if (res) rows.push({ activo, precio_actual: res.precio, moneda: res.moneda, updated_at: new Date().toISOString() });
+        if (res) {
+          // Usar activo como id para que el upsert siempre actualice la fila existente
+          rows.push({ id: activo, activo, precio_actual: res.precio, moneda: res.moneda, updated_at: new Date().toISOString() });
+        } else {
+          fallidos.push(activo);
+        }
       }
       if (rows.length > 0) await dbUpsert("cotizaciones_cache", rows);
       await recargar();
+      if (fallidos.length > 0) alert(`No se pudo obtener precio para: ${fallidos.join(", ")}\n\nVerificá que el ticker sea correcto.`);
     } catch(e) { alert("Error al actualizar cotizaciones: " + e.message); }
     setLoadingCot(false);
   }
